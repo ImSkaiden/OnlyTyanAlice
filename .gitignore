@@ -1,0 +1,23 @@
+# Binaries & build artifacts
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.log
+*.tar.gz
+
+# Runtime logs & data
+conversations.jsonl
+*.pid
+*.tmp
+
+# Secrets
+*.key
+*.pem
+credentials.json
+.env
+
+# OS files
+.DS_Store
+Thumbs.db

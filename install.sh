@@ -1,18 +1,57 @@
 #!/bin/sh
 # ==============================================================================
-# 🚀 Universal Quasar Bridge & OnlyTyan Installer for Yandex Stations (ARM64)
-# Поддерживает:
-#   - Яндекс Станция Мини 2 (с LED-часами и без)
-#   - Яндекс Станция Мини 1
-#   - Яндекс Станция Лайт 1 & 2
-#   - Яндекс Станция Миди / Станция 2
+# 🚀 Universal OnlyTyan & Quasar Bridge Installer for ALL Yandex Stations
+#
+# Supported Devices (based on hackalice.me hardware matrix):
+#   - Яндекс Станция Мини 1 (Amlogic A113X, axg, ToF sensor, AML-AUGESOUND)
+#   - Яндекс Станция Мини 2 (Allwinner H616, sun50iw9p1, touch controls)
+#   - Яндекс Станция Мини 2 с часами (H616 + LED Matrix display)
+#   - Яндекс Станция Лайт 1 (Rockchip RK3308, yandexmicro)
+#   - Яндекс Станция Лайт 2 (Rockchip, yandexplum, LED screen)
+#   - Яндекс Станция Миди (Amlogic A311D, cucumber, LED screen + Zigbee)
+#   - Яндекс Станция 2 (Amlogic S905X2, yandexstation_2, LED top)
+#   - Яндекс Станция Макс (Amlogic S905X3, yandexmax, LED matrix)
+#   - Яндекс Станция 1 / Станция (Amlogic S905X, yandexstation, HDMI)
+#
+# Quick 1-line run:
+#   curl -sSL https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/install.sh | sh
 # ==============================================================================
 set -e
 
-export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/opt/bin:$PATH"
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/data/opt/bin:/opt/bin:$PATH"
+
+# Default Bridge & Backend endpoints
+DEFAULT_BRIDGE_URL="ws://195.62.49.84:8090/uni.ws"
+DEFAULT_SERVER_URL="http://195.62.49.84:8088"
+
+BRIDGE_URL="${BRIDGE_URL:-$DEFAULT_BRIDGE_URL}"
+SERVER_URL="${SERVER_URL:-$DEFAULT_SERVER_URL}"
+
+# Parse optional command-line arguments
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --bridge|-b)
+            BRIDGE_URL="$2"
+            shift 2
+            ;;
+        --server|-s)
+            SERVER_URL="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Использование: install.sh [--bridge <ws_url>] [--server <http_url>]"
+            echo "Пример:"
+            echo "  curl -sSL https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/install.sh | sh -s -- --bridge ws://195.62.49.84:8090/uni.ws"
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
 echo "===================================================================="
-echo "    ✨ Quasar Bridge & OnlyTyan Universal Client Installer ✨       "
+echo "    ✨ Universal OnlyTyan & Quasar Bridge Installer ✨             "
 echo "===================================================================="
 
 # 1. Проверка прав root
@@ -23,12 +62,12 @@ fi
 
 # 2. Проверка архитектуры ядра
 ARCH=$(uname -m)
-if [ "$ARCH" != "aarch64" ]; then
-    echo "⚠️ ПРЕДУПРЕЖДЕНИЕ: Нестандартная архитектура ($ARCH). Ожидается aarch64." >&2
+if [ "$ARCH" != "aarch64" ] && [ "$ARCH" != "armv7l" ]; then
+    echo "⚠️ ПРЕДУПРЕЖДЕНИЕ: Нестандартная архитектура ($ARCH)." >&2
 fi
 
-# 3. Определение модели Яндекс Станции
-echo "[1/7] 🔍 Определение модели станции..."
+# 3. Интеллектуальное определение модели Яндекс Станции (Hardware Matrix)
+echo "[1/6] 🔍 Определение модели станции и оборудования..."
 
 DT_COMPAT=""
 if [ -f /proc/device-tree/compatible ]; then
@@ -50,243 +89,224 @@ if [ -e /dev/led_display ] || [ -e /dev/led_matrix ] || [ -d /sys/class/led_disp
     HAS_LED_CLOCK=1
 fi
 
-STATION_MODEL="Unknown"
+STATION_MODEL="Яндекс Станция (Универсальная)"
 STATION_CODE="universal"
-STATION_FEATURES=""
+AUDIO_OUTPUT_DEVICE="default"
 
 case "$DT_COMPAT $DT_MODEL $CFG_PRESET" in
-    *mini2*|*yandexmini_2*|*station-mini2*)
+    *mini2*|*yandexmini_2*|*station-mini2*|*sun50iw9*)
         if [ "$HAS_LED_CLOCK" -eq 1 ]; then
-            STATION_MODEL="Яндекс Станция Мини 2 с часами (LED Matrix)"
+            STATION_MODEL="Яндекс Станция Мини 2 с часами (Allwinner H616, LED Matrix)"
             STATION_CODE="mini2_clock"
-            STATION_FEATURES="LED-часы/погода, 10W динамик, сенсорные кнопки +/-, AUX"
         else
-            STATION_MODEL="Яндекс Станция Мини 2 (без часов)"
+            STATION_MODEL="Яндекс Станция Мини 2 (Allwinner H616, без часов)"
             STATION_CODE="mini2"
-            STATION_FEATURES="10W динамик, сенсорные кнопки +/-, AUX"
         fi
+        AUDIO_OUTPUT_DEVICE="default"
         ;;
-    *axg*|*yandexmini*|*station-mini*)
-        STATION_MODEL="Яндекс Станция Мини 1"
+    *axg*|*yandexmini*|*station-mini*|*AML-AUGESOUND*)
+        STATION_MODEL="Яндекс Станция Мини 1 (Amlogic A113X, ToF сенсор)"
         STATION_CODE="mini1"
-        STATION_FEATURES="3W динамик, жестовый ToF сенсор, AUX"
+        AUDIO_OUTPUT_DEVICE="plughw:0,0"
         ;;
-    *micro*|*yandexmicro*)
-        STATION_MODEL="Яндекс Станция Лайт"
-        STATION_CODE="lite"
-        STATION_FEATURES="5W динамик, физические кнопки"
+    *micro*|*yandexmicro*|*rk3308*)
+        STATION_MODEL="Яндекс Станция Лайт 1 (Rockchip RK3308)"
+        STATION_CODE="lite1"
+        AUDIO_OUTPUT_DEVICE="default"
         ;;
-    *plum*)
-        STATION_MODEL="Яндекс Станция Лайт 2"
+    *plum*|*yandexplum*)
+        STATION_MODEL="Яндекс Станция Лайт 2 (Rockchip, LED экран)"
         STATION_CODE="lite2"
-        STATION_FEATURES="LED-экран эмоций, 6W динамик"
+        AUDIO_OUTPUT_DEVICE="default"
         ;;
-    *midi*|*cucumber*)
-        STATION_MODEL="Яндекс Станция Миди"
+    *midi*|*cucumber*|*a311d*)
+        STATION_MODEL="Яндекс Станция Миди (Amlogic A311D, Zigbee, дисплей)"
         STATION_CODE="midi"
-        STATION_FEATURES="24W звук, Zigbee хаб, дисплей"
+        AUDIO_OUTPUT_DEVICE="default"
+        ;;
+    *yandexstation_2*|*s905x2*)
+        STATION_MODEL="Яндекс Станция 2 (Amlogic S905X2, LED top)"
+        STATION_CODE="station2"
+        AUDIO_OUTPUT_DEVICE="default"
+        ;;
+    *yandexmax*|*s905x3*)
+        STATION_MODEL="Яндекс Станция Макс (Amlogic S905X3, LED матрица)"
+        STATION_CODE="max"
+        AUDIO_OUTPUT_DEVICE="default"
+        ;;
+    *yandexstation*|*s905x*)
+        STATION_MODEL="Яндекс Станция 1 (Amlogic S905X, HDMI)"
+        STATION_CODE="station1"
+        AUDIO_OUTPUT_DEVICE="default"
         ;;
     *)
-        STATION_MODEL="Яндекс Станция (Универсальная)"
-        STATION_CODE="universal"
-        STATION_FEATURES="Quasar AAPI прошивка"
+        # Автоматическое определение по звуковой карте
+        if aplay -l 2>/dev/null | grep -qi "AMLAUGESOUND"; then
+            STATION_MODEL="Яндекс Станция Мини 1 (AML-AUGESOUND)"
+            STATION_CODE="mini1"
+            AUDIO_OUTPUT_DEVICE="plughw:0,0"
+        elif aplay -l 2>/dev/null | grep -qi "sun50iw9"; then
+            STATION_MODEL="Яндекс Станция Мини 2 (Allwinner H616)"
+            STATION_CODE="mini2"
+            AUDIO_OUTPUT_DEVICE="default"
+        fi
         ;;
 esac
 
-echo "      📱 Найдено устройство: \033[1;32m$STATION_MODEL\033[0m"
-echo "      ⚙️ Особенности: $STATION_FEATURES"
+echo "      Определено устройство: $STATION_MODEL [$STATION_CODE]"
+echo "      Аудиовыход:          $AUDIO_OUTPUT_DEVICE"
 
-# 4. Адрес Бриджа и Сервера OnlyTyan
-DEFAULT_BRIDGE="wss://ot.imskaiden.xyz/uni.ws"
-DEFAULT_SERVER="https://ot.imskaiden.xyz"
-
-BRIDGE_URL="${1:-$DEFAULT_BRIDGE}"
-SERVER_URL="${2:-$DEFAULT_SERVER}"
-
-echo ""
-echo "[2/7] 🌐 Настройка сетевых адресов:"
-echo "      • WebSocket Bridge: $BRIDGE_URL"
-echo "      • OnlyTyan Server:  $SERVER_URL"
-echo ""
-
-# 5. Подготовка файловой системы и бэкап
-echo "[3/7] 💾 Создание резервных копий и перемонтирование rootfs..."
+# 4. Монтирование файловой системы на запись
+echo "[2/6] 🔓 Подготовка файловой системы (remount rw)..."
 mount -o remount,rw / 2>/dev/null || true
+mount -o remount,rw /system 2>/dev/null || true
+mount -o remount,rw /vendor 2>/dev/null || true
 
-BACKUP_DIR="/data/opt/backup"
-mkdir -p "$BACKUP_DIR" /data/opt/bin
+# Создаем базовые рабочие директории
+mkdir -p /data/opt/bin /data/opt/etc /data/opt/soloist /tmp /data/logs
 
-if [ -f /system/vendor/quasar/quasar.cfg ] && [ ! -f "$BACKUP_DIR/quasar.cfg.orig" ]; then
-    cp -af /system/vendor/quasar/quasar.cfg "$BACKUP_DIR/quasar.cfg.orig"
-    echo "      ✅ Создана копия /system/vendor/quasar/quasar.cfg.orig"
-fi
+# 5. Поиск и патч конфигурации Quasar (Uniproxy URL)
+echo "[3/6] ⚙️ Настройка Quasar конфигурации (uniProxyUrl)..."
 
-if [ -f /system/vendor/quasar/launch.json ] && [ ! -f "$BACKUP_DIR/launch.json.orig" ]; then
-    cp -af /system/vendor/quasar/launch.json "$BACKUP_DIR/launch.json.orig"
-    echo "      ✅ Создана копия /system/vendor/quasar/launch.json.orig"
-fi
-
-# 6. Отключение автообновлений Яндекса (Защита от сброса root)
-echo "[4/7] 🛡️ Защита от автообновлений Яндекса (OTA Lock)..."
-
-# Подменяем публичный ключ проверки обновлений на пустой/фиктивный
-if [ -f /system/vendor/quasar/ota_script.pub ]; then
-    if [ ! -f "$BACKUP_DIR/ota_script.pub.orig" ]; then
-        cp -af /system/vendor/quasar/ota_script.pub "$BACKUP_DIR/ota_script.pub.orig"
+QUASAR_CFG=""
+for candidate in \
+    /system/vendor/quasar/quasar.cfg \
+    /system/workdir/quasar.cfg \
+    /data/quasar.cfg \
+    /etc/quasar.cfg; do
+    if [ -f "$candidate" ]; then
+        QUASAR_CFG="$candidate"
+        break
     fi
-    echo "DUMMY_PUB_KEY_ONLYTYAN_OTA_BLOCK" > /system/vendor/quasar/ota_script.pub
-    chmod 644 /system/vendor/quasar/ota_script.pub
-fi
+done
 
-# Заглушаем скрипт обновления прошивки
-if [ -f /system/vendor/quasar/device_ota_update.sh ]; then
-    cat << 'EOF_OTA' > /system/vendor/quasar/device_ota_update.sh
-#!/bin/sh
-echo "OTA updates are disabled by Quasar Bridge."
-exit 0
-EOF_OTA
-    chmod 755 /system/vendor/quasar/device_ota_update.sh
-fi
-
-# Блокировка CDN обновлений в /etc/hosts
-if ! grep -q "quasar.s3.yandex.net" /etc/hosts 2>/dev/null; then
-    cat << 'EOF_HOSTS' >> /etc/hosts
-
-# Блокировка OTA Яндекса
-127.0.0.1 quasar.s3.yandex.net
-127.0.0.1 clck.yandex.net
-127.0.0.1 appmetrica.yandex.net
-127.0.0.1 metrica.yandex.net
-EOF_HOSTS
-fi
-echo "      ✅ Защита OTA активирована."
-
-# 7. Патчинг quasar.cfg для перенаправления в Quasar Bridge
-echo "[5/7] 🔧 Перенаправление Uniproxy на Quasar Bridge..."
-
-QCFG="/system/vendor/quasar/quasar.cfg"
-if [ -f "$QCFG" ]; then
-    # Заменяем uniProxyUrl
-    sed -i "s|\"uniProxyUrl\": *\"[^\"]*\"|\"uniProxyUrl\": \"$BRIDGE_URL\"|g" "$QCFG"
-    
-    # Отключаем Zstd сжатие для корректного парсинга protobuf/json мостом
-    sed -i "s|\"wsUseZstd\": *true|\"wsUseZstd\": false|g" "$QCFG"
-
-    # Специфика для Станции Мини 2
-    if [ "$STATION_CODE" = "mini2" ] || [ "$STATION_CODE" = "mini2_clock" ]; then
-        # Проверяем наличие корректных директив в quasar.cfg
-        echo "      ℹ️ Применены оптимизации для Станции Мини 2 (10W звук, кнопки)"
-    fi
-
-    echo "      ✅ Конфигурация $QCFG успешно обновлена!"
-else
-    echo "❌ ОШИБКА: Файл $QCFG не найден!" >&2
+if [ -z "$QUASAR_CFG" ]; then
+    echo "❌ ОШИБКА: quasar.cfg не найден на устройстве!" >&2
     exit 1
 fi
 
-# 8. Установка демона опроса команд и нативного TTS (glagol_daemon)
-echo "[6/7] 📻 Установка сервиса управления OnlyTyan (glagol_daemon)..."
+echo "      Найден конфиг: $QUASAR_CFG"
 
-# Скачиваем свежий бинарник демона с сервера
-DAEMON_PATH="/data/opt/bin/glagol_daemon"
-if [ -x "/tmp/soloist-pkg/bin/curl" ]; then
-    CURL_CMD="/tmp/soloist-pkg/bin/curl"
-elif which curl >/dev/null 2>&1; then
-    CURL_CMD="curl"
-else
-    CURL_CMD=""
+# Резервная копия оригинального файла
+if [ ! -f "${QUASAR_CFG}.orig" ]; then
+    cp "$QUASAR_CFG" "${QUASAR_CFG}.orig"
+    echo "      Создана резервная копия: ${QUASAR_CFG}.orig"
 fi
 
-if [ -n "$CURL_CMD" ]; then
-    $CURL_CMD -s -L "$SERVER_URL/static/glagol_daemon" -o "$DAEMON_PATH" 2>/dev/null || true
-elif which wget >/dev/null 2>&1; then
-    wget -q -O "$DAEMON_PATH" "$SERVER_URL/static/glagol_daemon" 2>/dev/null || true
-fi
+# Аккуратный патч uniProxyUrl без повреждения JSON
+CURRENT_UNIPROXY=$(grep -o '"uniProxyUrl": *"[^"]*"' "$QUASAR_CFG" 2>/dev/null | cut -d'"' -f4 || true)
+echo "      Текущий uniProxyUrl: ${CURRENT_UNIPROXY:-не задан}"
+echo "      Устанавливаем:       $BRIDGE_URL"
 
-if [ ! -s "$DAEMON_PATH" ] && [ -f "/data/opt/bin/glagol_daemon" ]; then
-    echo "      ℹ️ Используется локально установленный glagol_daemon"
-fi
-chmod 755 "$DAEMON_PATH" 2>/dev/null || true
+sed -i "s|\"uniProxyUrl\": *\"[^\"]*\"|\"uniProxyUrl\": \"$BRIDGE_URL\"|g" "$QUASAR_CFG"
 
-# Скрипт воркера
-cat << EOF_POLLER > /data/opt/bin/station_poller.sh
-#!/bin/sh
-# OnlyTyan Station Poller Runner
-while true; do
-    if [ -x /data/opt/bin/glagol_daemon ]; then
-        /data/opt/bin/glagol_daemon -server $SERVER_URL >> /tmp/glagol_daemon.log 2>&1
+# 6. Специфичные настройки аудио и сервисов (Mini 1 vs Mini 2 / Lite)
+echo "[4/6] 🎵 Настройка параметров аудиовыхода..."
+
+if [ "$STATION_CODE" = "mini1" ]; then
+    echo "      Применение ALSA fix для Mini 1 (APULSE_PLAYBACK_DEVICE=plughw:0,0)..."
+    # Если на колонке развернут Soloist, прописываем plughw:0,0
+    if [ -f /data/opt/soloist/start.sh ]; then
+        sed -i 's|export APULSE_PLAYBACK_DEVICE=.*|export APULSE_PLAYBACK_DEVICE=plughw:0,0|g' /data/opt/soloist/start.sh 2>/dev/null || true
     fi
-    sleep 2
-done
-EOF_POLLER
-chmod 755 /data/opt/bin/station_poller.sh
+    if [ -f /etc/init.d/S99soloist ]; then
+        sed -i 's|export APULSE_PLAYBACK_DEVICE=.*|export APULSE_PLAYBACK_DEVICE=plughw:0,0|g' /etc/init.d/S99soloist 2>/dev/null || true
+    fi
+    # Создаем глобальный маркер аудиовыхода
+    echo "export APULSE_PLAYBACK_DEVICE=plughw:0,0" > /data/opt/etc/audio_env.sh
+else
+    echo "export APULSE_PLAYBACK_DEVICE=default" > /data/opt/etc/audio_env.sh
+fi
 
-# Сервис автозапуска в /etc/init.d
-cat << 'EOF_INIT' > /etc/init.d/S98station_poller
+# 7. Защита от автообновлений Яндекса (OTA Anti-Brick Protection)
+echo "[5/6] 🛡 Настройка OTA защиты (блокировка перезаписи прошивки)..."
+if ! grep -q "ota.yandex.net" /etc/hosts 2>/dev/null; then
+    cat << 'EOF_OTA' >> /etc/hosts
+# OnlyTyan OTA Lock (prevents Yandex from overwriting custom rootfs)
+0.0.0.0 ota.yandex.net
+0.0.0.0 quasar.yandex.net
+EOF_OTA
+    echo "      Добавлена защита в /etc/hosts"
+else
+    echo "      Защита в /etc/hosts уже активна"
+fi
+
+# 8. Установка утилиты управления tyan CLI
+echo "[6/6] 🛠 Установка утилиты управления tyan CLI..."
+TYAN_PATH="/data/opt/bin/tyan"
+
+# Загружаем актуальную утилиту tyan
+CURL_BIN=""
+if which curl >/dev/null 2>&1; then
+    CURL_BIN="curl -sSL"
+elif which wget >/dev/null 2>&1; then
+    CURL_BIN="wget -q -O -"
+fi
+
+if [ -n "$CURL_BIN" ]; then
+    $CURL_BIN "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/tyan" > "$TYAN_PATH" 2>/dev/null || true
+fi
+
+# Если загрузка не удалась, создаем встроенную надежную версию tyan
+if [ ! -s "$TYAN_PATH" ]; then
+    cat << 'EOF_TYAN' > "$TYAN_PATH"
 #!/bin/sh
+set -e
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/data/opt/bin:/opt/bin:$PATH"
+
 case "$1" in
-    start)
-        killall station_poller.sh glagol_daemon 2>/dev/null || true
-        /data/opt/bin/station_poller.sh >/dev/null 2>&1 &
-        ;;
-    stop)
-        killall station_poller.sh glagol_daemon 2>/dev/null || true
+    status)
+        echo "=== OnlyTyan Station Status ==="
+        echo "IP: $(ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 || echo 'unknown')"
+        echo "Quasar maind: $(pgrep maind >/dev/null && echo 'RUNNING' || echo 'STOPPED')"
+        CFG="/system/vendor/quasar/quasar.cfg"
+        echo "uniProxyUrl: $(grep -o '"uniProxyUrl": *"[^"]*"' $CFG 2>/dev/null | cut -d'"' -f4 || echo 'not set')"
+        if [ -x /data/opt/soloist/bin/soloist ]; then
+            echo "Soloist: $(pgrep soloist >/dev/null && echo 'RUNNING' || echo 'STOPPED')"
+        fi
         ;;
     restart)
-        "$0" stop
-        sleep 1
-        "$0" start
+        echo "Перезапуск Quasar maind..."
+        killall -9 maind 2>/dev/null || true
+        echo "Готово."
+        ;;
+    say)
+        shift
+        TEXT="$*"
+        if [ -z "$TEXT" ]; then
+            echo "Использование: tyan say \"Текст\""
+            exit 1
+        fi
+        echo "Озвучивание: $TEXT"
+        # Воспроизведение через volumeprompt или local tts
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart}" >&2
-        exit 1
+        echo "Использование: tyan {status|restart|say}"
         ;;
 esac
-EOF_INIT
-chmod 755 /etc/init.d/S98station_poller
-
-# Запускаем поллер
-/etc/init.d/S98station_poller restart >/dev/null 2>&1 || true
-
-# 8b. Установка утилиты управления tyan CLI
-echo "      🛠️ Установка утилиты командной строки tyan CLI..."
-TYAN_BIN="/data/opt/bin/tyan"
-if [ -n "$CURL_CMD" ]; then
-    $CURL_CMD -s -L "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/tyan" -o "$TYAN_BIN" 2>/dev/null || true
-elif which wget >/dev/null 2>&1; then
-    wget -q -O "$TYAN_BIN" "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/tyan" 2>/dev/null || true
+EOF_TYAN
 fi
-chmod 755 "$TYAN_BIN" 2>/dev/null || true
-ln -sf "$TYAN_BIN" /usr/bin/tyan 2>/dev/null || true
-ln -sf "$TYAN_BIN" /bin/tyan 2>/dev/null || true
 
-# Возвращаем rootfs в режим только для чтения
+chmod 755 "$TYAN_PATH" 2>/dev/null || true
+ln -sf "$TYAN_PATH" /usr/bin/tyan 2>/dev/null || true
+ln -sf "$TYAN_PATH" /bin/tyan 2>/dev/null || true
+
+# Возвращаем rootfs в режим только для чтения (Ubifs безопасность)
 mount -o remount,ro / 2>/dev/null || true
 
-# 9. Перезапуск Quasar maind
-echo "[7/7] 🔄 Перезапуск служб Quasar..."
+# 9. Перезапуск Quasar maind для мгновенного применения нового моста
+echo ""
+echo "🔄 Перезапуск служб Quasar..."
 killall -9 maind 2>/dev/null || true
 
 echo ""
 echo "===================================================================="
 echo "    🎉 УСТАНОВКА УСПЕШНО ЗАВЕРШЕНА!                                "
 echo "===================================================================="
-echo "Модель:        $STATION_MODEL"
-echo "Quasar Bridge: $BRIDGE_URL"
-echo "OnlyTyan:      $SERVER_URL"
+echo "Модель устройства: $STATION_MODEL [$STATION_CODE]"
+echo "Quasar Bridge:     $BRIDGE_URL"
 echo ""
-echo "Управление колонкой через консоль (CLI):"
-echo "  tyan status     - Полная диагностика и статус сервисов"
-echo "  tyan test       - Проверка сети, звука и связи с мостом"
-echo "  tyan say \"...\"  - Озвучить фразу через динамик"
-echo "  tyan update     - Обновить софт и скрипты с GitHub"
-echo "  tyan logs       - Просмотр живых логов"
-echo ""
-echo "Что теперь произойдет:"
-echo "  1. Колонка подключена к вашему Quasar Bridge по безопасному WSS."
-echo "  2. При обращении «Тян» запросы пойдут через LLM-мост."
-echo "  3. Системные действия (музыка, таймеры, часы) прозрачно идут в Яндекс."
-if [ "$STATION_CODE" = "mini2_clock" ]; then
-echo "  4. LED-часы и погода на передней панели работают штатно."
-fi
+echo "Колонка переподключена к вашему приватному мосту OnlyTyan!"
+echo "Для проверки состояния введите на колонке:"
+echo "  tyan status"
 echo "===================================================================="

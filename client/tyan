@@ -6,8 +6,8 @@ set -e
 export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/data/opt/bin:$PATH"
 
 REPO_RAW="https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main"
-SERVER_URL="https://ot.imskaiden.xyz"
-BRIDGE_URL="wss://ot.imskaiden.xyz/uni.ws"
+SERVER_URL="http://195.62.49.84:8088"
+BRIDGE_URL="ws://195.62.49.84:8090/uni.ws"
 
 # Colors
 C_RESET="\033[0m"

@@ -109,8 +109,11 @@ cmd_status() {
         OTA_STATUS="${C_RED}⚠️ Не заблокировано (Яндекс может сбросить root)${C_RESET}"
     fi
 
+    DEVICE_ID=$(cat /data/opt/etc/device_id 2>/dev/null || (/system/vendor/quasar/q device-id 2>/dev/null | grep -o 'Device ID: [A-Za-z0-9]*' | cut -d' ' -f3) || echo "не определен")
+
     echo -e "${C_BOLD}Информация об устройстве:${C_RESET}"
     echo -e "  📱 Модель:          ${C_CYAN}$MODEL${C_RESET}"
+    echo -e "  🆔 Device ID:       ${C_BOLD}$DEVICE_ID${C_RESET}"
     echo -e "  📶 IP адрес:        $IP"
     echo -e "  🔊 Громкость:       ${C_BOLD}${VOL_LVL}/10${C_RESET} (${RAW_VOL}%)"
     echo -e "  🛡️ Защита OTA:      $OTA_STATUS"
@@ -124,23 +127,24 @@ cmd_status() {
 }
 
 cmd_say() {
-    TEXT="$1"
+    TEXT="$*"
     if [ -z "$TEXT" ]; then
         echo -e "${C_RED}Ошибка: укажите текст для озвучки!${C_RESET}"
-        echo "Пример: tyan say \"Привет!\""
+        echo "Пример: tyan say Привет!"
         exit 1
     fi
 
     echo -e "🗣️ Озвучивание: ${C_CYAN}$TEXT${C_RESET}..."
-    # Пробуем через локальный сокет Glagol
     if [ -x /data/opt/bin/glagol_daemon ]; then
-        /data/opt/bin/glagol_daemon -server "$SERVER_URL" -say "$TEXT" 2>/dev/null || true
+        /data/opt/bin/glagol_daemon -server "$SERVER_URL" -say "$TEXT"
+        echo -e "${C_GREEN}✅ Воспроизведено через динамик!${C_RESET}"
+    else
+        DEVICE_ID=$(cat /data/opt/etc/device_id 2>/dev/null || true)
+        curl -s -X POST "$SERVER_URL/api/station/command" \
+            -H "Content-Type: application/json" \
+            -d "{\"type\":\"say\",\"device_id\":\"$DEVICE_ID\",\"payload\":{\"text\":\"$TEXT\"}}" >/dev/null 2>&1 || true
+        echo -e "${C_GREEN}✅ Отправлено в очередь воспроизведения!${C_RESET}"
     fi
-    # Запасной вариант через вебхук OnlyTyan
-    curl -s -X POST "$SERVER_URL/api/station/command" \
-        -H "Content-Type: application/json" \
-        -d "{\"type\":\"say\",\"payload\":{\"text\":\"$TEXT\"}}" >/dev/null 2>&1 || true
-    echo -e "${C_GREEN}✅ Отправлено на колонку!${C_RESET}"
 }
 
 cmd_test() {
@@ -221,12 +225,20 @@ cmd_restart() {
             ;;
         glagol|poller)
             echo "Перезапуск OnlyTyan Poller..."
-            /etc/init.d/S98station_poller restart >/dev/null 2>&1 || true
+            if [ -x /etc/init.d/S99glagol ]; then
+                /etc/init.d/S99glagol restart >/dev/null 2>&1 || true
+            else
+                killall -9 glagol_daemon 2>/dev/null || true
+                mkdir -p /data/logs
+                /data/opt/bin/glagol_daemon -server "$SERVER_URL" > /data/logs/glagol.log 2>&1 &
+            fi
             echo -e "${C_GREEN}Poller перезапущен.${C_RESET}"
             ;;
         all)
             echo "Перезапуск всех служб..."
-            /etc/init.d/S98station_poller restart >/dev/null 2>&1 || true
+            if [ -x /etc/init.d/S99glagol ]; then
+                /etc/init.d/S99glagol restart >/dev/null 2>&1 || true
+            fi
             /data/opt/soloist/stop.sh >/dev/null 2>&1 || true
             /data/opt/soloist/start.sh >/dev/null 2>&1 || true
             killall -9 maind 2>/dev/null || true

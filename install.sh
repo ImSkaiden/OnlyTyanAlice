@@ -223,7 +223,7 @@ else
 fi
 
 # 7. Защита от автообновлений Яндекса (OTA Anti-Brick Protection)
-echo "[5/6] 🛡 Настройка OTA защиты (блокировка перезаписи прошивки)..."
+echo "[5/8] 🛡 Настройка OTA защиты (блокировка перезаписи прошивки)..."
 if ! grep -q "quasar.s3.yandex.net" /etc/hosts 2>/dev/null; then
     cat << 'EOF_OTA' >> /etc/hosts
 # OnlyTyan OTA Lock (блокируем только скачивание OTA-образов, не ломая авторизацию)
@@ -237,8 +237,70 @@ else
     echo "      Защита в /etc/hosts уже активна"
 fi
 
-# 8. Установка утилиты управления tyan CLI
-echo "[6/6] 🛠 Установка утилиты управления tyan CLI..."
+# 8. Определение и сохранение Device ID
+echo "[6/8] 🆔 Определение Device ID..."
+DEVICE_ID=""
+if [ -x /system/vendor/quasar/q ]; then
+    DEVICE_ID=$(/system/vendor/quasar/q device-id 2>/dev/null | grep -o 'Device ID: [A-Za-z0-9]*' | cut -d' ' -f3 || true)
+fi
+if [ -z "$DEVICE_ID" ] && [ -f /proc/device-tree/serial-number ]; then
+    DEVICE_ID=$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null || true)
+fi
+if [ -n "$DEVICE_ID" ]; then
+    echo "$DEVICE_ID" > /data/opt/etc/device_id
+    echo "      Device ID:           $DEVICE_ID"
+fi
+
+# 9. Установка OnlyTyan Station Daemon (glagol_daemon)
+echo "[7/8] 📻 Установка фонового демона OnlyTyan (glagol_daemon)..."
+GLAGOL_BIN="/data/opt/bin/glagol_daemon"
+CURL_BIN=""
+if which curl >/dev/null 2>&1; then
+    CURL_BIN="curl -sSL"
+elif which wget >/dev/null 2>&1; then
+    CURL_BIN="wget -q -O -"
+fi
+
+if [ -n "$CURL_BIN" ]; then
+    $CURL_BIN "$SERVER_URL/static/glagol_daemon" > "$GLAGOL_BIN" 2>/dev/null || \
+    $CURL_BIN "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/glagol_daemon" > "$GLAGOL_BIN" 2>/dev/null || true
+fi
+chmod 755 "$GLAGOL_BIN" 2>/dev/null || true
+
+# Создание сервиса автозапуска демона /etc/init.d/S99glagol
+cat << 'EOF_GLAGOL' > /etc/init.d/S99glagol
+#!/bin/sh
+DAEMON="/data/opt/bin/glagol_daemon"
+LOG="/data/logs/glagol.log"
+
+case "$1" in
+    start)
+        if [ -x "$DAEMON" ]; then
+            killall -9 glagol_daemon 2>/dev/null || true
+            mkdir -p /data/logs
+            "$DAEMON" -server "http://195.62.49.84:8088" >> "$LOG" 2>&1 &
+        fi
+        ;;
+    stop)
+        killall -9 glagol_daemon 2>/dev/null || true
+        ;;
+    restart)
+        $0 stop
+        sleep 1
+        $0 start
+        ;;
+    *)
+        $0 start
+        ;;
+esac
+EOF_GLAGOL
+chmod 755 /etc/init.d/S99glagol 2>/dev/null || true
+
+# Запуск демона прямо сейчас
+/etc/init.d/S99glagol restart >/dev/null 2>&1 || true
+
+# 10. Установка утилиты управления tyan CLI
+echo "[8/8] 🛠 Установка утилиты управления tyan CLI..."
 TYAN_PATH="/data/opt/bin/tyan"
 
 # Загружаем актуальную утилиту tyan

@@ -15,6 +15,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,7 +74,7 @@ type GlagolMessage struct {
 
 func newUUID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
@@ -91,7 +92,7 @@ func sendWSFrame(conn io.Writer, opcode byte, payload []byte) error {
 	}
 
 	mask := make([]byte, 4)
-	rand.Read(mask)
+	_, _ = rand.Read(mask)
 	frame = append(frame, mask...)
 
 	masked := make([]byte, l)
@@ -130,7 +131,7 @@ func writeRingLeds(r, g, b int) {
 	gVal := []byte(strconv.Itoa(g))
 	bVal := []byte(strconv.Itoa(b))
 
-	// 1. Allwinner/Mini 2 ring sysfs (/sys/class/leds/*:ring*/brightness)
+	// Allwinner / Mini 2 ring sysfs (/sys/class/leds/*:ring*/brightness)
 	for i := 1; i <= 6; i++ {
 		for _, prefix := range []string{"mini2", "yandex"} {
 			rp := fmt.Sprintf("/sys/class/leds/%s:red:ring%d/brightness", prefix, i)
@@ -225,7 +226,7 @@ func setStationLed(color, effect string) {
 
 	go func() {
 		defer cancel()
-		if r == 0 && g == 0 && b == 0 || effect == "off" {
+		if (r == 0 && g == 0 && b == 0) || effect == "off" {
 			writeRingLeds(0, 0, 0)
 			return
 		}
@@ -294,15 +295,15 @@ func setRealVolume(percent int, token string) {
 	}
 
 	// 1. Set ALSA mixer
-	exec.Command("/system/vendor/quasar/set_volume.sh", strconv.Itoa(percent)).Run()
+	_ = exec.Command("/system/vendor/quasar/set_volume.sh", strconv.Itoa(percent)).Run()
 
-	// 2. Set Spotify Connect volume
-	exec.Command("/data/opt/spotify-connect/cli.sh", "volume", strconv.Itoa(percent)).Run()
+	// 2. Set Spotify Connect volume if installed
+	_ = exec.Command("/data/opt/spotify-connect/cli.sh", "volume", strconv.Itoa(percent)).Run()
 
 	// 3. Update Glagol if token is present
 	if token != "" {
 		volFloat := float64(percent) / 100.0
-		sendGlagolSimple(token, GlagolPayload{
+		_ = sendGlagolSimple(token, GlagolPayload{
 			Command: "setVolume",
 			Volume:  volFloat,
 		})
@@ -319,7 +320,7 @@ func sendGlagolSimple(token string, payload GlagolPayload) error {
 	defer conn.Close()
 
 	keyBytes := make([]byte, 16)
-	rand.Read(keyBytes)
+	_, _ = rand.Read(keyBytes)
 	secKey := base64.StdEncoding.EncodeToString(keyBytes)
 
 	req := fmt.Sprintf("GET / HTTP/1.1\r\nHost: 127.0.0.1:1961\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", secKey)
@@ -334,7 +335,7 @@ func sendGlagolSimple(token string, payload GlagolPayload) error {
 	}
 
 	// Answer ping if any
-	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	for {
 		header := make([]byte, 2)
 		if _, err := io.ReadFull(reader, header); err != nil {
@@ -344,14 +345,14 @@ func sendGlagolSimple(token string, payload GlagolPayload) error {
 		length := int(header[1] & 0x7F)
 		if length == 126 {
 			ext := make([]byte, 2)
-			io.ReadFull(reader, ext)
+			_, _ = io.ReadFull(reader, ext)
 			length = int(ext[0])<<8 | int(ext[1])
 		}
 		p := make([]byte, length)
-		io.ReadFull(reader, p)
+		_, _ = io.ReadFull(reader, p)
 
 		if opcode == 0x9 {
-			sendWSFrame(conn, 0xA, p)
+			_ = sendWSFrame(conn, 0xA, p)
 			break
 		}
 	}
@@ -393,18 +394,144 @@ func speakViaGlagol(token, text string) error {
 	})
 }
 
+func detectDeviceID(explicitID string) string {
+	if explicitID != "" {
+		return explicitID
+	}
+	// 1. Saved in /data/opt/etc/device_id
+	if data, err := os.ReadFile("/data/opt/etc/device_id"); err == nil {
+		id := strings.TrimSpace(string(data))
+		if id != "" {
+			return id
+		}
+	}
+	// 2. /system/vendor/quasar/q device-id
+	if out, err := exec.Command("/system/vendor/quasar/q", "device-id").Output(); err == nil {
+		re := regexp.MustCompile(`Device ID:\s*([A-Za-z0-9]+)`)
+		if m := re.FindStringSubmatch(string(out)); len(m) >= 2 {
+			id := strings.TrimSpace(m[1])
+			_ = os.MkdirAll("/data/opt/etc", 0755)
+			_ = os.WriteFile("/data/opt/etc/device_id", []byte(id), 0644)
+			return id
+		}
+	}
+	// 3. Fallback to /proc/device-tree/serial-number
+	if data, err := os.ReadFile("/proc/device-tree/serial-number"); err == nil {
+		id := strings.Trim(strings.TrimSpace(string(data)), "\x00")
+		if id != "" {
+			return id
+		}
+	}
+	return "FF98F029E01F3BF90B1FC3EA"
+}
+
+func detectAudioDevice(overrideDev string) string {
+	if overrideDev != "" {
+		return overrideDev
+	}
+	if data, err := os.ReadFile("/data/opt/etc/audio_env.sh"); err == nil {
+		str := string(data)
+		if strings.Contains(str, "plughw:0,0") {
+			return "plughw:0,0"
+		}
+		if strings.Contains(str, "default") {
+			return "default"
+		}
+	}
+	if cards, err := os.ReadFile("/proc/asound/cards"); err == nil {
+		if strings.Contains(string(cards), "AML-AUGESOUND") || strings.Contains(string(cards), "AMLAUGESOUND") {
+			return "plughw:0,0"
+		}
+	}
+	return "default"
+}
+
+func playTtsAudio(serverURL, text, audioDev string) error {
+	ttsURL := fmt.Sprintf("%s/api/station/tts_audio?text=%s&style=cute", strings.TrimRight(serverURL, "/"), url.QueryEscape(text))
+	client := &http.Client{Timeout: 25 * time.Second}
+	resp, err := client.Get(ttsURL)
+	if err != nil {
+		return fmt.Errorf("download error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned status: %d", resp.StatusCode)
+	}
+
+	tmpWav := "/tmp/tyan_speech.wav"
+	out, err := os.Create(tmpWav)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, resp.Body)
+	_ = out.Close()
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpWav)
+
+	var cmd *exec.Cmd
+	if audioDev != "" && audioDev != "default" {
+		cmd = exec.Command("/usr/bin/aplay", "-D", audioDev, "-q", tmpWav)
+	} else {
+		cmd = exec.Command("/usr/bin/aplay", "-q", tmpWav)
+	}
+	return cmd.Run()
+}
+
+func speak(serverURL, token, text, audioDev string) {
+	if text == "" {
+		return
+	}
+	// 1. If Glagol token is present, try local Glagol socket first
+	if token != "" {
+		err := speakViaGlagol(token, text)
+		if err == nil {
+			log.Printf("[Glagol] Spoke via native Glagol: %s", text)
+			return
+		}
+		log.Printf("[Glagol] Native repeat failed (%v), falling back to OnlyTyan anime voice TTS...", err)
+	}
+	// 2. Play high quality anime voice TTS via ALSA aplay
+	if err := playTtsAudio(serverURL, text, audioDev); err != nil {
+		log.Printf("[TTS Error] Failed to play TTS audio: %v", err)
+	} else {
+		log.Printf("[TTS] Spoke OnlyTyan voice: %s", text)
+	}
+}
+
 func main() {
 	serverURL := flag.String("server", "http://195.62.49.84:8088", "OnlyTyan server base URL")
+	explicitDev := flag.String("device", "", "Device ID (override)")
+	sayText := flag.String("say", "", "Direct phrase to speak and exit")
+	audioDevFlag := flag.String("audio-dev", "", "ALSA playback device (e.g. plughw:0,0 or default)")
 	flag.Parse()
 
-	log.Printf("Starting OnlyTyan Native Station Daemon (polling %s)...", *serverURL)
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	deviceID := detectDeviceID(*explicitDev)
+	audioDev := detectAudioDevice(*audioDevFlag)
+
+	if *sayText != "" {
+		log.Printf("Speaking one-shot phrase on %s (%s)...", deviceID, audioDev)
+		speak(*serverURL, "", *sayText, audioDev)
+		return
+	}
+
+	log.Printf("Starting OnlyTyan Station Daemon [Device: %s, Audio: %s, Server: %s]...", deviceID, audioDev, *serverURL)
+	httpClient := &http.Client{Timeout: 8 * time.Second}
 
 	for {
 		curVol := getRealVolume()
-		pollURL := fmt.Sprintf("%s/api/station/poll?volume=%d", *serverURL, curVol)
+		pollURL := fmt.Sprintf("%s/api/station/poll?device_id=%s&volume=%d", strings.TrimRight(*serverURL, "/"), url.QueryEscape(deviceID), curVol)
 
-		resp, err := httpClient.Get(pollURL)
+		req, err := http.NewRequest("GET", pollURL, nil)
+		if err != nil {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		req.Header.Set("X-Station-Device-Id", deviceID)
+
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			time.Sleep(3 * time.Second)
 			continue
@@ -412,7 +539,7 @@ func main() {
 
 		var pollResp StationPollResponse
 		err = json.NewDecoder(resp.Body).Decode(&pollResp)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if err != nil {
 			time.Sleep(2 * time.Second)
@@ -422,15 +549,12 @@ func main() {
 		if pollResp.OK && len(pollResp.Commands) > 0 {
 			token := pollResp.GlagolToken
 			for _, cmd := range pollResp.Commands {
+				log.Printf("[Command] Type=%s ID=%s", cmd.Type, cmd.ID)
 				switch cmd.Type {
 				case "say":
 					text, _ := cmd.Payload["text"].(string)
-					if text != "" && token != "" {
-						if err := speakViaGlagol(token, text); err != nil {
-							log.Printf("[Glagol Error] %v", err)
-						} else {
-							log.Printf("[Glagol] Spoke: %s", text)
-						}
+					if text != "" {
+						speak(*serverURL, token, text, audioDev)
 					}
 
 				case "volume":
@@ -449,30 +573,30 @@ func main() {
 					setRealVolume(pct, token)
 
 				case "pause":
-					exec.Command("/data/opt/spotify-connect/cli.sh", "pause").Run()
+					_ = exec.Command("/data/opt/spotify-connect/cli.sh", "pause").Run()
 					if token != "" {
-						sendGlagolSimple(token, GlagolPayload{Command: "stop"})
+						_ = sendGlagolSimple(token, GlagolPayload{Command: "stop"})
 					}
 					log.Printf("[Playback] Paused")
 
 				case "resume", "play":
-					exec.Command("/data/opt/spotify-connect/cli.sh", "resume").Run()
+					_ = exec.Command("/data/opt/spotify-connect/cli.sh", "resume").Run()
 					if token != "" {
-						sendGlagolSimple(token, GlagolPayload{Command: "play"})
+						_ = sendGlagolSimple(token, GlagolPayload{Command: "play"})
 					}
 					log.Printf("[Playback] Resumed")
 
 				case "next":
-					exec.Command("/data/opt/spotify-connect/cli.sh", "next").Run()
+					_ = exec.Command("/data/opt/spotify-connect/cli.sh", "next").Run()
 					if token != "" {
-						sendGlagolSimple(token, GlagolPayload{Command: "next"})
+						_ = sendGlagolSimple(token, GlagolPayload{Command: "next"})
 					}
 					log.Printf("[Playback] Next track")
 
 				case "prev", "previous":
-					exec.Command("/data/opt/spotify-connect/cli.sh", "previous").Run()
+					_ = exec.Command("/data/opt/spotify-connect/cli.sh", "previous").Run()
 					if token != "" {
-						sendGlagolSimple(token, GlagolPayload{Command: "prev"})
+						_ = sendGlagolSimple(token, GlagolPayload{Command: "prev"})
 					}
 					log.Printf("[Playback] Previous track")
 
@@ -484,7 +608,7 @@ func main() {
 						if err != nil {
 							log.Printf("[Eyes Error] %v", err)
 						} else {
-							resp.Body.Close()
+							_ = resp.Body.Close()
 							log.Printf("[Eyes] Updated eyes panel state: %s", string(raw))
 						}
 					}

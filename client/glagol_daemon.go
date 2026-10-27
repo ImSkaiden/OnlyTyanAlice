@@ -425,79 +425,14 @@ func detectDeviceID(explicitID string) string {
 	return "FF98F029E01F3BF90B1FC3EA"
 }
 
-func detectAudioDevice(overrideDev string) string {
-	if overrideDev != "" {
-		return overrideDev
-	}
-	if data, err := os.ReadFile("/data/opt/etc/audio_env.sh"); err == nil {
-		str := string(data)
-		if strings.Contains(str, "plughw:0,0") {
-			return "plughw:0,0"
-		}
-		if strings.Contains(str, "default") {
-			return "default"
-		}
-	}
-	if cards, err := os.ReadFile("/proc/asound/cards"); err == nil {
-		if strings.Contains(string(cards), "AML-AUGESOUND") || strings.Contains(string(cards), "AMLAUGESOUND") {
-			return "plughw:0,0"
-		}
-	}
-	return "default"
-}
-
-func playTtsAudio(serverURL, text, audioDev string) error {
-	ttsURL := fmt.Sprintf("%s/api/station/tts_audio?text=%s&style=cute", strings.TrimRight(serverURL, "/"), url.QueryEscape(text))
-	client := &http.Client{Timeout: 25 * time.Second}
-	resp, err := client.Get(ttsURL)
-	if err != nil {
-		return fmt.Errorf("download error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status: %d", resp.StatusCode)
-	}
-
-	tmpWav := "/tmp/tyan_speech.wav"
-	out, err := os.Create(tmpWav)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, resp.Body)
-	_ = out.Close()
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmpWav)
-
-	var cmd *exec.Cmd
-	if audioDev != "" && audioDev != "default" {
-		cmd = exec.Command("/usr/bin/aplay", "-D", audioDev, "-q", tmpWav)
-	} else {
-		cmd = exec.Command("/usr/bin/aplay", "-q", tmpWav)
-	}
-	return cmd.Run()
-}
-
-func speak(serverURL, token, text, audioDev string) {
-	if text == "" {
+func speak(token, text string) {
+	if text == "" || token == "" {
 		return
 	}
-	// 1. If Glagol token is present, try local Glagol socket first
-	if token != "" {
-		err := speakViaGlagol(token, text)
-		if err == nil {
-			log.Printf("[Glagol] Spoke via native Glagol: %s", text)
-			return
-		}
-		log.Printf("[Glagol] Native repeat failed (%v), falling back to OnlyTyan anime voice TTS...", err)
-	}
-	// 2. Play high quality anime voice TTS via ALSA aplay
-	if err := playTtsAudio(serverURL, text, audioDev); err != nil {
-		log.Printf("[TTS Error] Failed to play TTS audio: %v", err)
+	if err := speakViaGlagol(token, text); err != nil {
+		log.Printf("[Glagol Error] %v", err)
 	} else {
-		log.Printf("[TTS] Spoke OnlyTyan voice: %s", text)
+		log.Printf("[Glagol] Spoke via native Glagol: %s", text)
 	}
 }
 
@@ -505,19 +440,16 @@ func main() {
 	serverURL := flag.String("server", "http://195.62.49.84:8088", "OnlyTyan server base URL")
 	explicitDev := flag.String("device", "", "Device ID (override)")
 	sayText := flag.String("say", "", "Direct phrase to speak and exit")
-	audioDevFlag := flag.String("audio-dev", "", "ALSA playback device (e.g. plughw:0,0 or default)")
 	flag.Parse()
 
 	deviceID := detectDeviceID(*explicitDev)
-	audioDev := detectAudioDevice(*audioDevFlag)
 
 	if *sayText != "" {
-		log.Printf("Speaking one-shot phrase on %s (%s)...", deviceID, audioDev)
-		speak(*serverURL, "", *sayText, audioDev)
+		log.Printf("One-shot say command requested: %s", *sayText)
 		return
 	}
 
-	log.Printf("Starting OnlyTyan Station Daemon [Device: %s, Audio: %s, Server: %s]...", deviceID, audioDev, *serverURL)
+	log.Printf("Starting OnlyTyan Station Daemon [Device: %s, Server: %s]...", deviceID, *serverURL)
 	httpClient := &http.Client{Timeout: 8 * time.Second}
 
 	for {
@@ -554,7 +486,7 @@ func main() {
 				case "say":
 					text, _ := cmd.Payload["text"].(string)
 					if text != "" {
-						speak(*serverURL, token, text, audioDev)
+						speak(token, text)
 					}
 
 				case "volume":

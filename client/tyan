@@ -156,12 +156,12 @@ cmd_test() {
     fi
 
     # 2. Bridge HTTPS & Healthcheck
-    echo -n "2. Проверка OnlyTyan Bridge Health (ot.imskaiden.xyz)... "
-    HEALTH=$(curl -s --connect-timeout 4 https://ot.imskaiden.xyz/bridge/healthz 2>/dev/null || echo "")
+    echo -n "2. Проверка OnlyTyan Server ($SERVER_URL)... "
+    HEALTH=$(curl -s --connect-timeout 4 "$SERVER_URL/api/station/poll" 2>/dev/null || echo "")
     if echo "$HEALTH" | grep -qi "ok"; then
-        echo -e "${C_GREEN}OK (Мост активен)${C_RESET}"
+        echo -e "${C_GREEN}OK (Сервер OnlyTyan активен)${C_RESET}"
     else
-        echo -e "${C_RED}FAIL (Нет связи с сервером)${C_RESET}"
+        echo -e "${C_RED}FAIL (Нет связи с сервером $SERVER_URL)${C_RESET}"
     fi
 
     # 3. Sound test
@@ -173,10 +173,10 @@ cmd_test() {
     fi
 
     # 4. Quasar Uniproxy connection
-    echo -n "4. Проверка подключения Quasar к Uniproxy... "
+    echo -n "4. Проверка подключения Quasar к Uniproxy ($BRIDGE_URL)... "
     LAST_UP=$(grep -i 'setUniProxySettings' /data/quasar/daemons_logs/maind.log 2>/dev/null | tail -n1 || echo "")
-    if echo "$LAST_UP" | grep -qi "ot.imskaiden.xyz"; then
-        echo -e "${C_GREEN}OK (Подключен к wss://ot.imskaiden.xyz/uni.ws)${C_RESET}"
+    if echo "$LAST_UP" | grep -qi "195.62.49.84"; then
+        echo -e "${C_GREEN}OK (Подключен к $BRIDGE_URL)${C_RESET}"
     else
         echo -e "${C_YELLOW}$LAST_UP${C_RESET}"
     fi

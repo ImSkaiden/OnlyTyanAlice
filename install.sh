@@ -194,11 +194,15 @@ if [ ! -f "${QUASAR_CFG}.orig" ]; then
 fi
 
 # Аккуратный патч uniProxyUrl без повреждения JSON
-CURRENT_UNIPROXY=$(grep -o '"uniProxyUrl": *"[^"]*"' "$QUASAR_CFG" 2>/dev/null | cut -d'"' -f4 || true)
+CURRENT_UNIPROXY=$(grep -E '"uniProxyUrl"[[:space:]]*:[[:space:]]*"[^"]*"' "$QUASAR_CFG" 2>/dev/null | cut -d'"' -f4 || true)
 echo "      Текущий uniProxyUrl: ${CURRENT_UNIPROXY:-не задан}"
 echo "      Устанавливаем:       $BRIDGE_URL"
 
-sed -i "s|\"uniProxyUrl\": *\"[^\"]*\"|\"uniProxyUrl\": \"$BRIDGE_URL\"|g" "$QUASAR_CFG"
+# Учитываем возможный пробел перед двоеточием в оригинальном quasar.cfg
+sed -i -E "s|\"uniProxyUrl\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"uniProxyUrl\": \"$BRIDGE_URL\"|g" "$QUASAR_CFG"
+
+# Отключаем сжатие wsUseZstd, так как кастомный мост не использует проприетарный zstd-словарь Яндекса
+sed -i -E 's/"wsUseZstd"[[:space:]]*:[[:space:]]*true/"wsUseZstd": false/g' "$QUASAR_CFG" 2>/dev/null || true
 
 # 6. Специфичные настройки аудио и сервисов (Mini 1 vs Mini 2 / Lite)
 echo "[4/6] 🎵 Настройка параметров аудиовыхода..."
@@ -220,12 +224,14 @@ fi
 
 # 7. Защита от автообновлений Яндекса (OTA Anti-Brick Protection)
 echo "[5/6] 🛡 Настройка OTA защиты (блокировка перезаписи прошивки)..."
-if ! grep -q "ota.yandex.net" /etc/hosts 2>/dev/null; then
+if ! grep -q "quasar.s3.yandex.net" /etc/hosts 2>/dev/null; then
     cat << 'EOF_OTA' >> /etc/hosts
-# OnlyTyan OTA Lock (prevents Yandex from overwriting custom rootfs)
+# OnlyTyan OTA Lock (блокируем только скачивание OTA-образов, не ломая авторизацию)
 0.0.0.0 ota.yandex.net
-0.0.0.0 quasar.yandex.net
+0.0.0.0 quasar.s3.yandex.net
 EOF_OTA
+    # Убираем ошибочную блокировку основного quasar.yandex.net если она была добавлена
+    sed -i '/0.0.0.0 quasar.yandex.net/d' /etc/hosts 2>/dev/null || true
     echo "      Добавлена защита в /etc/hosts"
 else
     echo "      Защита в /etc/hosts уже активна"
@@ -291,7 +297,8 @@ chmod 755 "$TYAN_PATH" 2>/dev/null || true
 ln -sf "$TYAN_PATH" /usr/bin/tyan 2>/dev/null || true
 ln -sf "$TYAN_PATH" /bin/tyan 2>/dev/null || true
 
-# Возвращаем rootfs в режим только для чтения (Ubifs безопасность)
+# Обязательный sync перед переводом в read-only (защита UBIFS от повреждения данных)
+sync
 mount -o remount,ro / 2>/dev/null || true
 
 # 9. Перезапуск Quasar maind для мгновенного применения нового моста

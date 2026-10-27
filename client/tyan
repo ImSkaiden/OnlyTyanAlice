@@ -1,0 +1,345 @@
+#!/bin/sh
+# ==============================================================================
+# 🐱 OnlyTyan CLI Management Utility for Yandex Stations (ARM64)
+# ==============================================================================
+set -e
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/data/opt/bin:$PATH"
+
+REPO_RAW="https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main"
+SERVER_URL="https://ot.imskaiden.xyz"
+BRIDGE_URL="wss://ot.imskaiden.xyz/uni.ws"
+
+# Colors
+C_RESET="\033[0m"
+C_BOLD="\033[1m"
+C_CYAN="\033[1;36m"
+C_GREEN="\033[1;32m"
+C_YELLOW="\033[1;33m"
+C_RED="\033[1;31m"
+C_MAGENTA="\033[1;35m"
+
+print_header() {
+    echo -e "${C_MAGENTA}╔══════════════════════════════════════════════════════════════╗${C_RESET}"
+    echo -e "${C_MAGENTA}║             🐱 OnlyTyan Station CLI Utility 📻               ║${C_RESET}"
+    echo -e "${C_MAGENTA}╚══════════════════════════════════════════════════════════════╝${C_RESET}"
+}
+
+cmd_help() {
+    print_header
+    echo -e "${C_BOLD}Использование:${C_RESET} tyan <команда> [параметры]"
+    echo ""
+    echo -e "${C_CYAN}Основные команды:${C_RESET}"
+    echo -e "  ${C_GREEN}status${C_RESET}             - Полная диагностика станции, моста, спотика и служб"
+    echo -e "  ${C_GREEN}test${C_RESET}               - Проверка сети, WSS-моста, звука и TTS"
+    echo -e "  ${C_GREEN}say \"текст\"${C_RESET}        - Озвучить фразу через динамик голосом Алисы/Тян"
+    echo -e "  ${C_GREEN}update${C_RESET}             - Обновить клиент и скрипты из GitHub репозитория"
+    echo -e "  ${C_GREEN}volume <1..10>${C_RESET}     - Установить громкость (1..10)"
+    echo -e "  ${C_GREEN}restart [служба]${C_RESET}   - Перезапуск служб (all | quasar | soloist | glagol)"
+    echo -e "  ${C_GREEN}logs [служба]${C_RESET}      - Просмотр живых логов (maind | glagol | soloist)"
+    echo -e "  ${C_GREEN}ota [lock|unlock]${C_RESET}  - Управление защитой от автообновлений Яндекса"
+    echo -e "  ${C_GREEN}led [паттерн]${C_RESET}      - Тест светодиодных паттернов / эмоций"
+    echo ""
+    echo -e "${C_CYAN}Примеры:${C_RESET}"
+    echo "  tyan status"
+    echo "  tyan say \"Привет! Я подключена к OnlyTyan!\""
+    echo "  tyan volume 7"
+    echo "  tyan logs maind"
+    echo "  tyan update"
+    echo ""
+}
+
+get_model() {
+    DT_COMPAT=""
+    [ -f /proc/device-tree/compatible ] && DT_COMPAT=$(tr '\0' ' ' < /proc/device-tree/compatible 2>/dev/null || true)
+    HAS_CLOCK=0
+    [ -e /dev/led_display ] || [ -d /sys/class/led_display ] || grep -qi "clock" /system/vendor/quasar/quasar.cfg 2>/dev/null && HAS_CLOCK=1
+    
+    case "$DT_COMPAT" in
+        *mini2*|*yandexmini_2*)
+            [ "$HAS_CLOCK" -eq 1 ] && echo "Яндекс Станция Мини 2 с часами (LED Matrix)" || echo "Яндекс Станция Мини 2"
+            ;;
+        *axg*|*yandexmini*) echo "Яндекс Станция Мини 1" ;;
+        *micro*) echo "Яндекс Станция Лайт 1" ;;
+        *plum*) echo "Яндекс Станция Лайт 2 (экран эмоций)" ;;
+        *midi*|*cucumber*) echo "Яндекс Станция Миди" ;;
+        *) echo "Яндекс Станция (aarch64)" ;;
+    esac
+}
+
+cmd_status() {
+    print_header
+    MODEL=$(get_model)
+    IP=$(ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 || echo "нет связи")
+    
+    # 1. Quasar maind
+    MAIND_PID=$(pidof maind 2>/dev/null || true)
+    MAIND_STATUS="${C_RED}🔴 Остановлен${C_RESET}"
+    [ -n "$MAIND_PID" ] && MAIND_STATUS="${C_GREEN}🟢 Работает (PID $MAIND_PID)${C_RESET}"
+
+    # 2. Bridge config
+    CURRENT_UNIPROXY=$(grep -o '"uniProxyUrl": *"[^"]*"' /system/vendor/quasar/quasar.cfg 2>/dev/null | cut -d'"' -f4 || echo "не задан")
+    
+    # 3. Glagol Poller
+    GLAGOL_PID=$(pidof glagol_daemon 2>/dev/null || true)
+    GLAGOL_STATUS="${C_RED}🔴 Остановлен${C_RESET}"
+    [ -n "$GLAGOL_PID" ] && GLAGOL_STATUS="${C_GREEN}🟢 Работает (PID $GLAGOL_PID)${C_RESET}"
+
+    # 4. Soloist Spotify
+    SOLOIST_PID=$(pidof soloist 2>/dev/null || true)
+    SOLOIST_STATUS="${C_RED}🔴 Остановлен${C_RESET}"
+    if [ -n "$SOLOIST_PID" ]; then
+        STATUS_OUT=$(soloist ctl -w 127.0.0.1:9090 status 2>/dev/null || true)
+        if echo "$STATUS_OUT" | grep -qi "logged in: yes"; then
+            SOLOIST_STATUS="${C_GREEN}🟢 Авторизован и активен (PID $SOLOIST_PID)${C_RESET}"
+        else
+            SOLOIST_STATUS="${C_YELLOW}🟡 Ожидает входа из приложения Spotify${C_RESET}"
+        fi
+    fi
+
+    # 5. Volume
+    RAW_VOL=$(/system/vendor/quasar/set_volume.sh 2>&1 | grep -o '[0-9]*%' | tr -d '%' | head -n1 || echo "")
+    if [ -z "$RAW_VOL" ]; then
+        RAW_VOL=$(LD_LIBRARY_PATH=/system/vendor/quasar/libs /system/workdir/bin/amixer sget 'Master' 2>/dev/null | grep -o '\[[0-9]*%\]' | tr -d '[]%' | head -n1 || echo "50")
+    fi
+    VOL_LVL=$(( (RAW_VOL + 5) / 10 ))
+
+    # 6. OTA Lock
+    OTA_STATUS="${C_GREEN}🔒 Заблокировано (безопасно)${C_RESET}"
+    if [ -f /system/vendor/quasar/ota_script.pub ] && grep -q "BEGIN RSA" /system/vendor/quasar/ota_script.pub 2>/dev/null; then
+        OTA_STATUS="${C_RED}⚠️ Не заблокировано (Яндекс может сбросить root)${C_RESET}"
+    fi
+
+    echo -e "${C_BOLD}Информация об устройстве:${C_RESET}"
+    echo -e "  📱 Модель:          ${C_CYAN}$MODEL${C_RESET}"
+    echo -e "  📶 IP адрес:        $IP"
+    echo -e "  🔊 Громкость:       ${C_BOLD}${VOL_LVL}/10${C_RESET} (${RAW_VOL}%)"
+    echo -e "  🛡️ Защита OTA:      $OTA_STATUS"
+    echo ""
+    echo -e "${C_BOLD}Статус сервисов:${C_RESET}"
+    echo -e "  🤖 Quasar (Алиса):  $MAIND_STATUS"
+    echo -e "  🌉 Uniproxy Bridge: ${C_CYAN}$CURRENT_UNIPROXY${C_RESET}"
+    echo -e "  📻 OnlyTyan Poller: $GLAGOL_STATUS"
+    echo -e "  🎵 Spotify Soloist: $SOLOIST_STATUS"
+    echo ""
+}
+
+cmd_say() {
+    TEXT="$1"
+    if [ -z "$TEXT" ]; then
+        echo -e "${C_RED}Ошибка: укажите текст для озвучки!${C_RESET}"
+        echo "Пример: tyan say \"Привет!\""
+        exit 1
+    fi
+
+    echo -e "🗣️ Озвучивание: ${C_CYAN}$TEXT${C_RESET}..."
+    # Пробуем через локальный сокет Glagol
+    if [ -x /data/opt/bin/glagol_daemon ]; then
+        /data/opt/bin/glagol_daemon -server "$SERVER_URL" -say "$TEXT" 2>/dev/null || true
+    fi
+    # Запасной вариант через вебхук OnlyTyan
+    curl -s -X POST "$SERVER_URL/api/station/command" \
+        -H "Content-Type: application/json" \
+        -d "{\"type\":\"say\",\"payload\":{\"text\":\"$TEXT\"}}" >/dev/null 2>&1 || true
+    echo -e "${C_GREEN}✅ Отправлено на колонку!${C_RESET}"
+}
+
+cmd_test() {
+    print_header
+    echo -e "${C_BOLD}Запуск диагностических тестов...${C_RESET}\n"
+
+    # 1. DNS & Internet
+    echo -n "1. Доступ в интернет (1.1.1.1)... "
+    if ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
+        echo -e "${C_GREEN}OK${C_RESET}"
+    else
+        echo -e "${C_RED}FAIL${C_RESET}"
+    fi
+
+    # 2. Bridge HTTPS & Healthcheck
+    echo -n "2. Проверка OnlyTyan Bridge Health (ot.imskaiden.xyz)... "
+    HEALTH=$(curl -s --connect-timeout 4 https://ot.imskaiden.xyz/bridge/healthz 2>/dev/null || echo "")
+    if echo "$HEALTH" | grep -qi "ok"; then
+        echo -e "${C_GREEN}OK (Мост активен)${C_RESET}"
+    else
+        echo -e "${C_RED}FAIL (Нет связи с сервером)${C_RESET}"
+    fi
+
+    # 3. Sound test
+    echo -n "3. Проверка воспроизведения ALSA... "
+    if aplay /system/vendor/quasar/sounds/soundinit.wav >/dev/null 2>&1 || aplay /data/opt/sounds/boot.wav >/dev/null 2>&1; then
+        echo -e "${C_GREEN}OK (Звук воспроизведен)${C_RESET}"
+    else
+        echo -e "${C_YELLOW}Звуковой файл не найден или устройство занято${C_RESET}"
+    fi
+
+    # 4. Quasar Uniproxy connection
+    echo -n "4. Проверка подключения Quasar к Uniproxy... "
+    LAST_UP=$(grep -i 'setUniProxySettings' /data/quasar/daemons_logs/maind.log 2>/dev/null | tail -n1 || echo "")
+    if echo "$LAST_UP" | grep -qi "ot.imskaiden.xyz"; then
+        echo -e "${C_GREEN}OK (Подключен к wss://ot.imskaiden.xyz/uni.ws)${C_RESET}"
+    else
+        echo -e "${C_YELLOW}$LAST_UP${C_RESET}"
+    fi
+
+    echo ""
+    echo -e "${C_BOLD}Диагностика завершена.${C_RESET}"
+}
+
+cmd_volume() {
+    LVL="$1"
+    if [ -z "$LVL" ] || [ "$LVL" -lt 0 ] || [ "$LVL" -gt 10 ]; then
+        echo -e "${C_RED}Укажите громкость от 0 до 10!${C_RESET}"
+        echo "Пример: tyan volume 7"
+        exit 1
+    fi
+
+    PCT=$((LVL * 10))
+    echo -e "🔊 Установка громкости: ${C_BOLD}${LVL}/10${C_RESET} (${PCT}%)..."
+    
+    # ALSA
+    /system/vendor/quasar/set_volume.sh "$PCT" >/dev/null 2>&1 || true
+    
+    # Spotify Soloist
+    soloist ctl -w 127.0.0.1:9090 volume "$PCT" >/dev/null 2>&1 || true
+    
+    echo -e "${C_GREEN}✅ Громкость установлена!${C_RESET}"
+}
+
+cmd_restart() {
+    TARGET="${1:-all}"
+    case "$TARGET" in
+        quasar|maind)
+            echo "Перезапуск Quasar (Алиса)..."
+            killall -9 maind 2>/dev/null || true
+            echo -e "${C_GREEN}Quasar перезапущен.${C_RESET}"
+            ;;
+        soloist|spotify)
+            echo "Перезапуск Spotify Soloist..."
+            /data/opt/soloist/stop.sh >/dev/null 2>&1 || true
+            /data/opt/soloist/start.sh >/dev/null 2>&1 || true
+            echo -e "${C_GREEN}Soloist перезапущен.${C_RESET}"
+            ;;
+        glagol|poller)
+            echo "Перезапуск OnlyTyan Poller..."
+            /etc/init.d/S98station_poller restart >/dev/null 2>&1 || true
+            echo -e "${C_GREEN}Poller перезапущен.${C_RESET}"
+            ;;
+        all)
+            echo "Перезапуск всех служб..."
+            /etc/init.d/S98station_poller restart >/dev/null 2>&1 || true
+            /data/opt/soloist/stop.sh >/dev/null 2>&1 || true
+            /data/opt/soloist/start.sh >/dev/null 2>&1 || true
+            killall -9 maind 2>/dev/null || true
+            echo -e "${C_GREEN}Все службы перезапущены.${C_RESET}"
+            ;;
+        *)
+            echo "Неизвестная служба: $TARGET. Варианты: all | quasar | soloist | glagol"
+            exit 1
+            ;;
+    esac
+}
+
+cmd_logs() {
+    LOG="${1:-maind}"
+    case "$LOG" in
+        maind|quasar|voice)
+            echo -e "${C_CYAN}=== Просмотр лога Quasar Voice (/data/quasar/daemons_logs/maind.log) ===${C_RESET}"
+            tail -f -n 40 /data/quasar/daemons_logs/maind.log
+            ;;
+        glagol|poller|bot)
+            echo -e "${C_CYAN}=== Просмотр лога OnlyTyan Poller (/tmp/glagol_daemon.log) ===${C_RESET}"
+            tail -f -n 40 /tmp/glagol_daemon.log
+            ;;
+        soloist|spotify)
+            echo -e "${C_CYAN}=== Просмотр лога Spotify Soloist (/tmp/soloist.log /tmp/soloist-bridge.log) ===${C_RESET}"
+            tail -f -n 40 /tmp/soloist.log /tmp/soloist-bridge.log
+            ;;
+        *)
+            echo "Варианты логов: maind | glagol | soloist"
+            ;;
+    esac
+}
+
+cmd_ota() {
+    ACTION="${1:-status}"
+    mount -o remount,rw / 2>/dev/null || true
+    case "$ACTION" in
+        lock)
+            echo "DUMMY_PUB_KEY_ONLYTYAN_OTA_BLOCK" > /system/vendor/quasar/ota_script.pub
+            cat << 'EOF' > /system/vendor/quasar/device_ota_update.sh
+#!/bin/sh
+exit 0
+EOF
+            chmod 755 /system/vendor/quasar/device_ota_update.sh
+            echo -e "${C_GREEN}🔒 Автообновления Яндекса заблокированы.${C_RESET}"
+            ;;
+        unlock)
+            if [ -f /data/opt/backup/ota_script.pub.orig ]; then
+                cp -f /data/opt/backup/ota_script.pub.orig /system/vendor/quasar/ota_script.pub
+            fi
+            echo -e "${C_YELLOW}🔓 Защита отключена. Обновления разрешены.${C_RESET}"
+            ;;
+        status)
+            if [ -f /system/vendor/quasar/ota_script.pub ] && grep -q "BEGIN RSA" /system/vendor/quasar/ota_script.pub; then
+                echo -e "Статус: ${C_RED}⚠️ Не заблокировано${C_RESET}"
+            else
+                echo -e "Статус: ${C_GREEN}🔒 Надежно заблокировано${C_RESET}"
+            fi
+            ;;
+    esac
+    mount -o remount,ro / 2>/dev/null || true
+}
+
+cmd_led() {
+    PATTERN="${1:-alice_speaking}"
+    PAT_FILE="/system/vendor/quasar/ledpatterns/${PATTERN}.led"
+    if [ ! -f "$PAT_FILE" ]; then
+        PAT_FILE="/system/vendor/quasar/ledpatterns/${PATTERN}"
+    fi
+
+    if [ -f "$PAT_FILE" ]; then
+        echo "Запуск светодиодного паттерна $PATTERN..."
+        /system/vendor/quasar/led_util "$PAT_FILE" 2>/dev/null || true
+    else
+        echo "Доступные паттерны в /system/vendor/quasar/ledpatterns/:"
+        ls /system/vendor/quasar/ledpatterns/*.led 2>/dev/null | xargs -n1 basename | sed 's/\.led//' | head -n 20
+    fi
+}
+
+cmd_update() {
+    print_header
+    echo -e "${C_CYAN}🔄 Обновление компонентов OnlyTyanAlice с GitHub...${C_RESET}"
+    mount -o remount,rw / 2>/dev/null || true
+
+    # 1. Скачиваем свежий инсталлер и накатываем
+    TMP_INST="/tmp/update_install.sh"
+    curl -sSL "$REPO_RAW/install.sh" -o "$TMP_INST"
+    if [ -s "$TMP_INST" ]; then
+        chmod 755 "$TMP_INST"
+        sh "$TMP_INST" "$BRIDGE_URL" "$SERVER_URL"
+        rm -f "$TMP_INST"
+        echo -e "${C_GREEN}🎉 Обновление успешно установлено!${C_RESET}"
+    else
+        echo -e "${C_RED}Ошибка скачивания обновления с GitHub!${C_RESET}"
+    fi
+    mount -o remount,ro / 2>/dev/null || true
+}
+
+# Router
+case "$1" in
+    status) cmd_status ;;
+    test) cmd_test ;;
+    say) cmd_say "$2" ;;
+    volume|vol) cmd_volume "$2" ;;
+    restart) cmd_restart "$2" ;;
+    logs|log) cmd_logs "$2" ;;
+    ota) cmd_ota "$2" ;;
+    led|eyes) cmd_led "$2" ;;
+    update) cmd_update ;;
+    help|--help|-h|"") cmd_help ;;
+    *)
+        echo -e "${C_RED}Неизвестная команда: $1${C_RESET}"
+        cmd_help
+        exit 1
+        ;;
+esac

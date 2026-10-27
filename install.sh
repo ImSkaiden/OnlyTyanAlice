@@ -248,6 +248,18 @@ chmod 755 /etc/init.d/S98station_poller
 # Запускаем поллер
 /etc/init.d/S98station_poller restart >/dev/null 2>&1 || true
 
+# 8b. Установка утилиты управления tyan CLI
+echo "      🛠️ Установка утилиты командной строки tyan CLI..."
+TYAN_BIN="/data/opt/bin/tyan"
+if [ -n "$CURL_CMD" ]; then
+    $CURL_CMD -s -L "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/tyan" -o "$TYAN_BIN" 2>/dev/null || true
+elif which wget >/dev/null 2>&1; then
+    wget -q -O "$TYAN_BIN" "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/tyan" 2>/dev/null || true
+fi
+chmod 755 "$TYAN_BIN" 2>/dev/null || true
+ln -sf "$TYAN_BIN" /usr/bin/tyan 2>/dev/null || true
+ln -sf "$TYAN_BIN" /bin/tyan 2>/dev/null || true
+
 # Возвращаем rootfs в режим только для чтения
 mount -o remount,ro / 2>/dev/null || true
 
@@ -263,16 +275,18 @@ echo "Модель:        $STATION_MODEL"
 echo "Quasar Bridge: $BRIDGE_URL"
 echo "OnlyTyan:      $SERVER_URL"
 echo ""
-echo "Что теперь произойдет:"
-echo "  1. Колонка переподключилась к вашему Quasar Bridge."
-echo "  2. При обращении «Тян» или диалоге запросы пойдут через LLM-мост."
-echo "  3. При обращении «Алиса» или системных запросах (музыка, таймеры,"
-echo "     погода, экран часов) всё прозрачно идет в Яндекс."
-if [ "$STATION_CODE" = "mini2_clock" ]; then
-echo "  4. LED-часы на передней панели продолжают работать штатно."
-fi
+echo "Управление колонкой через консоль (CLI):"
+echo "  tyan status     - Полная диагностика и статус сервисов"
+echo "  tyan test       - Проверка сети, звука и связи с мостом"
+echo "  tyan say \"...\"  - Озвучить фразу через динамик"
+echo "  tyan update     - Обновить софт и скрипты с GitHub"
+echo "  tyan logs       - Просмотр живых логов"
 echo ""
-echo "Для проверки состояния:"
-echo "  tail -f /data/quasar/daemons_logs/maind.log"
-echo "  tail -f /tmp/glagol_daemon.log"
+echo "Что теперь произойдет:"
+echo "  1. Колонка подключена к вашему Quasar Bridge по безопасному WSS."
+echo "  2. При обращении «Тян» запросы пойдут через LLM-мост."
+echo "  3. Системные действия (музыка, таймеры, часы) прозрачно идут в Яндекс."
+if [ "$STATION_CODE" = "mini2_clock" ]; then
+echo "  4. LED-часы и погода на передней панели работают штатно."
+fi
 echo "===================================================================="

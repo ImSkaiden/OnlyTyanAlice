@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
@@ -10,11 +12,16 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -95,6 +102,170 @@ func sendWSFrame(conn io.Writer, opcode byte, payload []byte) error {
 
 	_, err := conn.Write(frame)
 	return err
+}
+
+var (
+	ledCancelMu sync.Mutex
+	ledCancelFn context.CancelFunc
+)
+
+func writeRingLeds(r, g, b int) {
+	if r < 0 {
+		r = 0
+	} else if r > 255 {
+		r = 255
+	}
+	if g < 0 {
+		g = 0
+	} else if g > 255 {
+		g = 255
+	}
+	if b < 0 {
+		b = 0
+	} else if b > 255 {
+		b = 255
+	}
+
+	rVal := []byte(strconv.Itoa(r))
+	gVal := []byte(strconv.Itoa(g))
+	bVal := []byte(strconv.Itoa(b))
+
+	// 1. Allwinner/Mini 2 ring sysfs (/sys/class/leds/*:ring*/brightness)
+	for i := 1; i <= 6; i++ {
+		for _, prefix := range []string{"mini2", "yandex"} {
+			rp := fmt.Sprintf("/sys/class/leds/%s:red:ring%d/brightness", prefix, i)
+			gp := fmt.Sprintf("/sys/class/leds/%s:green:ring%d/brightness", prefix, i)
+			bp := fmt.Sprintf("/sys/class/leds/%s:blue:ring%d/brightness", prefix, i)
+			if _, err := os.Stat(rp); err == nil {
+				_ = os.WriteFile(rp, rVal, 0644)
+			}
+			if _, err := os.Stat(gp); err == nil {
+				_ = os.WriteFile(gp, gVal, 0644)
+			}
+			if _, err := os.Stat(bp); err == nil {
+				_ = os.WriteFile(bp, bVal, 0644)
+			}
+		}
+	}
+	// Fallback glob
+	if redMatches, _ := filepath.Glob("/sys/class/leds/*:red:ring*/brightness"); len(redMatches) > 0 {
+		for _, m := range redMatches {
+			_ = os.WriteFile(m, rVal, 0644)
+		}
+	}
+	if greenMatches, _ := filepath.Glob("/sys/class/leds/*:green:ring*/brightness"); len(greenMatches) > 0 {
+		for _, m := range greenMatches {
+			_ = os.WriteFile(m, gVal, 0644)
+		}
+	}
+	if blueMatches, _ := filepath.Glob("/sys/class/leds/*:blue:ring*/brightness"); len(blueMatches) > 0 {
+		for _, m := range blueMatches {
+			_ = os.WriteFile(m, bVal, 0644)
+		}
+	}
+}
+
+func hsvToRgb(h, s, v float64) (int, int, int) {
+	var r, g, b float64
+	i := math.Floor(h * 6)
+	f := h*6 - i
+	p := v * (1 - s)
+	q := v * (1 - f*s)
+	t := v * (1 - (1-f)*s)
+	switch int(i) % 6 {
+	case 0:
+		r, g, b = v, t, p
+	case 1:
+		r, g, b = q, v, p
+	case 2:
+		r, g, b = p, v, t
+	case 3:
+		r, g, b = p, q, v
+	case 4:
+		r, g, b = t, p, v
+	case 5:
+		r, g, b = v, p, q
+	}
+	return int(r * 255), int(g * 255), int(b * 255)
+}
+
+func setStationLed(color, effect string) {
+	r, g, b := 0, 0, 0
+	switch strings.ToLower(color) {
+	case "purple", "фиолетовый", "малиновый", "magenta":
+		r, g, b = 200, 0, 255
+	case "pink", "розовый":
+		r, g, b = 255, 40, 140
+	case "blue", "синий":
+		r, g, b = 0, 80, 255
+	case "cyan", "бирюзовый", "голубой":
+		r, g, b = 0, 255, 200
+	case "green", "зеленый", "зелёный":
+		r, g, b = 0, 255, 0
+	case "yellow", "желтый", "жёлтый":
+		r, g, b = 255, 200, 0
+	case "red", "красный":
+		r, g, b = 255, 0, 0
+	case "white", "белый":
+		r, g, b = 255, 255, 255
+	case "off", "выключить", "black":
+		r, g, b = 0, 0, 0
+	default:
+		r, g, b = 180, 0, 255
+	}
+
+	ledCancelMu.Lock()
+	if ledCancelFn != nil {
+		ledCancelFn()
+		ledCancelFn = nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ledCancelFn = cancel
+	ledCancelMu.Unlock()
+
+	go func() {
+		defer cancel()
+		if r == 0 && g == 0 && b == 0 || effect == "off" {
+			writeRingLeds(0, 0, 0)
+			return
+		}
+
+		if effect == "breathe" || effect == "pulse" {
+			ticker := time.NewTicker(40 * time.Millisecond)
+			defer ticker.Stop()
+			step := 0
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					step = (step + 1) % 100
+					factor := 0.55 + 0.45*math.Sin(float64(step)*2.0*math.Pi/100.0)
+					writeRingLeds(int(float64(r)*factor), int(float64(g)*factor), int(float64(b)*factor))
+				}
+			}
+		} else if effect == "rainbow" {
+			ticker := time.NewTicker(60 * time.Millisecond)
+			defer ticker.Stop()
+			hue := 0.0
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					hue += 0.02
+					if hue > 1.0 {
+						hue -= 1.0
+					}
+					rr, gg, bb := hsvToRgb(hue, 1.0, 1.0)
+					writeRingLeds(rr, gg, bb)
+				}
+			}
+		} else {
+			writeRingLeds(r, g, b)
+		}
+	}()
+	log.Printf("[LED] Set color: %s (R:%d G:%d B:%d), effect: %s", color, r, g, b, effect)
 }
 
 func getRealVolume() int {
@@ -304,6 +475,24 @@ func main() {
 						sendGlagolSimple(token, GlagolPayload{Command: "prev"})
 					}
 					log.Printf("[Playback] Previous track")
+
+				case "eyes":
+					raw, err := json.Marshal(cmd.Payload)
+					if err == nil {
+						c := &http.Client{Timeout: 2 * time.Second}
+						resp, err := c.Post("http://127.0.0.1:1213/api/state", "application/json", bytes.NewReader(raw))
+						if err != nil {
+							log.Printf("[Eyes Error] %v", err)
+						} else {
+							resp.Body.Close()
+							log.Printf("[Eyes] Updated eyes panel state: %s", string(raw))
+						}
+					}
+
+				case "led":
+					color, _ := cmd.Payload["color"].(string)
+					effect, _ := cmd.Payload["effect"].(string)
+					setStationLed(color, effect)
 				}
 			}
 		}

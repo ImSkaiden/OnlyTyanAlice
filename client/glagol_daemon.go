@@ -72,6 +72,12 @@ type GlagolMessage struct {
 	Payload           GlagolPayload `json:"payload"`
 }
 
+var (
+	tokenCacheMu sync.Mutex
+	cachedToken  string
+	tokenExpiry  time.Time
+)
+
 func newUUID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
@@ -425,14 +431,100 @@ func detectDeviceID(explicitID string) string {
 	return "FF98F029E01F3BF90B1FC3EA"
 }
 
-func speak(token, text string) {
-	if text == "" || token == "" {
+func getLocalGlagolToken(deviceID string) (string, error) {
+	tokenCacheMu.Lock()
+	if cachedToken != "" && time.Now().Before(tokenExpiry) {
+		tok := cachedToken
+		tokenCacheMu.Unlock()
+		return tok, nil
+	}
+	tokenCacheMu.Unlock()
+
+	// 1. Читаем OAuth токен владельца напрямую из хранилища прошивки
+	data, err := os.ReadFile("/data/quasar/account_storage.dat")
+	if err != nil {
+		data, err = os.ReadFile("/bkupgrade/data/quasar/account_storage.dat")
+	}
+	if err != nil {
+		return "", fmt.Errorf("account_storage.dat not found: %w", err)
+	}
+
+	re := regexp.MustCompile(`y0_[A-Za-z0-9_-]+`)
+	oauthMatch := re.Find(data)
+	if oauthMatch == nil {
+		return "", fmt.Errorf("oauth token not found in account_storage.dat")
+	}
+	oauthToken := string(oauthMatch)
+
+	// 2. Определение платформы устройства
+	platform := "yandexmini"
+	if dt, err := os.ReadFile("/proc/device-tree/compatible"); err == nil {
+		s := string(dt)
+		if strings.Contains(s, "mini2") || strings.Contains(s, "sun50iw9") {
+			platform = "yandexmini_2"
+		} else if strings.Contains(s, "micro") || strings.Contains(s, "rk3308") {
+			platform = "yandexmicro"
+		} else if strings.Contains(s, "midi") || strings.Contains(s, "cucumber") {
+			platform = "yandexstation_midi"
+		}
+	}
+
+	targetURL := fmt.Sprintf("https://quasar.yandex.net/glagol/token?device_id=%s&platform=%s", deviceID, platform)
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "OAuth "+oauthToken)
+
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("glagol cloud request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("glagol cloud status %d", resp.StatusCode)
+	}
+
+	var res struct {
+		Status string `json:"status"`
+		Token  string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+	if res.Token == "" {
+		return "", fmt.Errorf("empty token in response")
+	}
+
+	tokenCacheMu.Lock()
+	cachedToken = res.Token
+	tokenExpiry = time.Now().Add(50 * time.Minute)
+	tokenCacheMu.Unlock()
+
+	log.Printf("[Glagol] Successfully refreshed native conversation token for %s [%s]", deviceID, platform)
+	return res.Token, nil
+}
+
+func speak(deviceID, text, serverToken string) {
+	if text == "" {
 		return
 	}
+	token := serverToken
+	if token == "" {
+		var err error
+		token, err = getLocalGlagolToken(deviceID)
+		if err != nil {
+			log.Printf("[Glagol Token Error] %v", err)
+			return
+		}
+	}
+
 	if err := speakViaGlagol(token, text); err != nil {
 		log.Printf("[Glagol Error] %v", err)
 	} else {
-		log.Printf("[Glagol] Spoke via native Glagol: %s", text)
+		log.Printf("[Glagol] Spoke: %s", text)
 	}
 }
 
@@ -445,7 +537,8 @@ func main() {
 	deviceID := detectDeviceID(*explicitDev)
 
 	if *sayText != "" {
-		log.Printf("One-shot say command requested: %s", *sayText)
+		log.Printf("One-shot say command requested for %s: %s", deviceID, *sayText)
+		speak(deviceID, *sayText, "")
 		return
 	}
 
@@ -486,7 +579,7 @@ func main() {
 				case "say":
 					text, _ := cmd.Payload["text"].(string)
 					if text != "" {
-						speak(token, text)
+						speak(deviceID, text, token)
 					}
 
 				case "volume":

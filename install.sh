@@ -67,7 +67,7 @@ if [ "$ARCH" != "aarch64" ] && [ "$ARCH" != "armv7l" ]; then
 fi
 
 # 3. Интеллектуальное определение модели Яндекс Станции (Hardware Matrix)
-echo "[1/6] 🔍 Определение модели станции и оборудования..."
+echo "[1/8] 🔍 Определение модели станции и оборудования..."
 
 DT_COMPAT=""
 if [ -f /proc/device-tree/compatible ]; then
@@ -157,7 +157,7 @@ echo "      Определено устройство: $STATION_MODEL [$STATION_
 echo "      Аудиовыход:          $AUDIO_OUTPUT_DEVICE"
 
 # 4. Монтирование файловой системы на запись
-echo "[2/6] 🔓 Подготовка файловой системы (remount rw)..."
+echo "[2/8] 🔓 Подготовка файловой системы (remount rw)..."
 mount -o remount,rw / 2>/dev/null || true
 mount -o remount,rw /system 2>/dev/null || true
 mount -o remount,rw /vendor 2>/dev/null || true
@@ -166,7 +166,7 @@ mount -o remount,rw /vendor 2>/dev/null || true
 mkdir -p /data/opt/bin /data/opt/etc /data/opt/soloist /tmp /data/logs
 
 # 5. Поиск и патч конфигурации Quasar (Uniproxy URL)
-echo "[3/6] ⚙️ Настройка Quasar конфигурации (uniProxyUrl)..."
+echo "[3/8] ⚙️ Настройка Quasar конфигурации (uniProxyUrl)..."
 
 QUASAR_CFG=""
 for candidate in \
@@ -205,7 +205,7 @@ sed -i -E "s|\"uniProxyUrl\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"uniProxyUrl\":
 sed -i -E 's/"wsUseZstd"[[:space:]]*:[[:space:]]*true/"wsUseZstd": false/g' "$QUASAR_CFG" 2>/dev/null || true
 
 # 6. Специфичные настройки аудио и сервисов (Mini 1 vs Mini 2 / Lite)
-echo "[4/6] 🎵 Настройка параметров аудиовыхода..."
+echo "[4/8] 🎵 Настройка параметров аудиовыхода..."
 
 if [ "$STATION_CODE" = "mini1" ]; then
     echo "      Применение ALSA fix для Mini 1 (APULSE_PLAYBACK_DEVICE=plughw:0,0)..."
@@ -261,8 +261,22 @@ elif which wget >/dev/null 2>&1; then
     CURL_BIN="wget -q -O -"
 fi
 
+case "$ARCH" in
+    aarch64|arm64)
+        DAEMON_SUFFIX="arm64"
+        ;;
+    armv7*|armhf|arm)
+        DAEMON_SUFFIX="armv7"
+        ;;
+    *)
+        DAEMON_SUFFIX="arm64"
+        ;;
+esac
+
 if [ -n "$CURL_BIN" ]; then
+    $CURL_BIN "$SERVER_URL/static/glagol_daemon_${DAEMON_SUFFIX}" > "$GLAGOL_BIN" 2>/dev/null || \
     $CURL_BIN "$SERVER_URL/static/glagol_daemon" > "$GLAGOL_BIN" 2>/dev/null || \
+    $CURL_BIN "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/glagol_daemon_${DAEMON_SUFFIX}" > "$GLAGOL_BIN" 2>/dev/null || \
     $CURL_BIN "https://raw.githubusercontent.com/ImSkaiden/OnlyTyanAlice/main/client/glagol_daemon" > "$GLAGOL_BIN" 2>/dev/null || true
 fi
 chmod 755 "$GLAGOL_BIN" 2>/dev/null || true
@@ -365,6 +379,8 @@ ln -sf "$TYAN_PATH" /bin/tyan 2>/dev/null || true
 
 # Обязательный sync перед переводом в read-only (защита UBIFS от повреждения данных)
 sync
+mount -o remount,ro /system 2>/dev/null || true
+mount -o remount,ro /vendor 2>/dev/null || true
 mount -o remount,ro / 2>/dev/null || true
 
 # 9. Перезапуск Quasar maind для мгновенного применения нового моста

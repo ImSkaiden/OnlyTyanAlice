@@ -232,6 +232,37 @@ func setStationLed(color, effect string) {
 
 	go func() {
 		defer cancel()
+		// Mini 1 hardware led_util fallback if sysfs leds are absent
+		if matches, _ := filepath.Glob("/sys/class/leds/*ring*/brightness"); len(matches) == 0 {
+			if _, err := os.Stat("/system/vendor/quasar/led_util"); err == nil {
+				_ = exec.Command("killall", "-9", "led_util").Run()
+				if (r != 0 || g != 0 || b != 0) && effect != "off" && color != "off" && color != "black" {
+					pattern := "/system/vendor/quasar/ledpatterns/alice_listening.led"
+					if effect == "pulse" || effect == "breathe" {
+						pattern = "/system/vendor/quasar/ledpatterns/alice_thinking.led"
+					} else if effect == "rainbow" {
+						pattern = "/system/vendor/quasar/ledpatterns/theremin_easter_5.led"
+					} else if color == "red" {
+						pattern = "/system/vendor/quasar/ledpatterns/mute_mics.led"
+					} else if color == "blue" {
+						pattern = "/system/vendor/quasar/ledpatterns/bluetooth_playing.led"
+					} else if color == "green" || color == "yellow" {
+						pattern = "/system/vendor/quasar/ledpatterns/notification_available.led"
+					}
+					cmd := exec.Command("/system/vendor/quasar/led_util", pattern)
+					cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/system/vendor/quasar/libs")
+					_ = cmd.Start()
+					go func() {
+						<-ctx.Done()
+						if cmd.Process != nil {
+							_ = cmd.Process.Kill()
+						}
+					}()
+				}
+				return
+			}
+		}
+
 		if (r == 0 && g == 0 && b == 0) || effect == "off" {
 			writeRingLeds(0, 0, 0)
 			return
@@ -340,29 +371,6 @@ func sendGlagolSimple(token string, payload GlagolPayload) error {
 		return fmt.Errorf("handshake failed")
 	}
 
-	// Answer ping if any
-	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-	for {
-		header := make([]byte, 2)
-		if _, err := io.ReadFull(reader, header); err != nil {
-			break
-		}
-		opcode := header[0] & 0x0F
-		length := int(header[1] & 0x7F)
-		if length == 126 {
-			ext := make([]byte, 2)
-			_, _ = io.ReadFull(reader, ext)
-			length = int(ext[0])<<8 | int(ext[1])
-		}
-		p := make([]byte, length)
-		_, _ = io.ReadFull(reader, p)
-
-		if opcode == 0x9 {
-			_ = sendWSFrame(conn, 0xA, p)
-			break
-		}
-	}
-
 	msg := GlagolMessage{
 		ConversationToken: token,
 		ID:                newUUID(),
@@ -425,6 +433,8 @@ func detectDeviceID(explicitID string) string {
 	if data, err := os.ReadFile("/proc/device-tree/serial-number"); err == nil {
 		id := strings.Trim(strings.TrimSpace(string(data)), "\x00")
 		if id != "" {
+			_ = os.MkdirAll("/data/opt/etc", 0755)
+			_ = os.WriteFile("/data/opt/etc/device_id", []byte(id), 0644)
 			return id
 		}
 	}
@@ -456,7 +466,7 @@ func getLocalGlagolToken(deviceID string) (string, error) {
 	}
 	oauthToken := string(oauthMatch)
 
-	// 2. Определение платформы устройства
+	// 2. Определение платформы устройства (Hardware Matrix)
 	platform := "yandexmini"
 	if dt, err := os.ReadFile("/proc/device-tree/compatible"); err == nil {
 		s := string(dt)
@@ -464,8 +474,16 @@ func getLocalGlagolToken(deviceID string) (string, error) {
 			platform = "yandexmini_2"
 		} else if strings.Contains(s, "micro") || strings.Contains(s, "rk3308") {
 			platform = "yandexmicro"
+		} else if strings.Contains(s, "plum") {
+			platform = "yandexplum"
 		} else if strings.Contains(s, "midi") || strings.Contains(s, "cucumber") {
 			platform = "yandexstation_midi"
+		} else if strings.Contains(s, "yandexstation_2") || strings.Contains(s, "s905x2") {
+			platform = "yandexstation_2"
+		} else if strings.Contains(s, "yandexmax") || strings.Contains(s, "s905x3") {
+			platform = "yandexmax"
+		} else if strings.Contains(s, "yandexstation") || strings.Contains(s, "s905x") {
+			platform = "yandexstation"
 		}
 	}
 
@@ -522,7 +540,20 @@ func speak(deviceID, text, serverToken string) {
 	}
 
 	if err := speakViaGlagol(token, text); err != nil {
-		log.Printf("[Glagol Error] %v", err)
+		log.Printf("[Glagol Error] %v, retrying with fresh token...", err)
+		tokenCacheMu.Lock()
+		cachedToken = ""
+		tokenCacheMu.Unlock()
+		freshToken, err2 := getLocalGlagolToken(deviceID)
+		if err2 == nil {
+			if err3 := speakViaGlagol(freshToken, text); err3 != nil {
+				log.Printf("[Glagol Retry Error] %v", err3)
+			} else {
+				log.Printf("[Glagol] Spoke after token refresh: %s", text)
+			}
+		} else {
+			log.Printf("[Glagol Refresh Error] %v", err2)
+		}
 	} else {
 		log.Printf("[Glagol] Spoke: %s", text)
 	}

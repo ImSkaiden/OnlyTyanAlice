@@ -307,7 +307,7 @@ func setStationLed(color, effect string) {
 }
 
 func getRealVolume() int {
-	cmd := exec.Command("/bin/sh", "-c", "LD_LIBRARY_PATH=/system/vendor/quasar/libs /system/workdir/bin/amixer sget 'Master'")
+	cmd := exec.Command("/bin/sh", "-c", "amixer sget 'Master' 2>/dev/null || /usr/bin/amixer sget 'Master' 2>/dev/null || LD_LIBRARY_PATH=/system/vendor/quasar/libs /system/workdir/bin/amixer sget 'Master' 2>/dev/null")
 	out, err := cmd.Output()
 	if err != nil {
 		return 50
@@ -331,8 +331,10 @@ func setRealVolume(percent int, token string) {
 		percent = 100
 	}
 
-	// 1. Set ALSA mixer
-	_ = exec.Command("/system/vendor/quasar/set_volume.sh", strconv.Itoa(percent)).Run()
+	// 1. Set ALSA mixer (via vendor script or direct amixer fallback)
+	if err := exec.Command("/system/vendor/quasar/set_volume.sh", strconv.Itoa(percent)).Run(); err != nil {
+		_ = exec.Command("/bin/sh", "-c", fmt.Sprintf("amixer set 'Master' %d%% 2>/dev/null || /usr/bin/amixer set 'Master' %d%% 2>/dev/null", percent, percent)).Run()
+	}
 
 	// 2. Set Spotify Connect volume if installed
 	_ = exec.Command("/data/opt/spotify-connect/cli.sh", "volume", strconv.Itoa(percent)).Run()

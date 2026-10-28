@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -30,7 +31,7 @@ func TestRotationPrivacyAndFailedReload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != 0600 || info.Size() > 1<<20 {
+		if (runtime.GOOS != "windows" && info.Mode().Perm() != 0600) || info.Size() > 1<<20 {
 			t.Fatalf("bad file: %s %v %d", name, info.Mode(), info.Size())
 		}
 	}

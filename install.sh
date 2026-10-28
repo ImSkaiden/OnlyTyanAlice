@@ -268,29 +268,30 @@ fi
 chmod 755 "$GLAGOL_BIN" 2>/dev/null || true
 
 # Создание сервиса автозапуска демона /etc/init.d/S99glagol
-cat << 'EOF_GLAGOL' > /etc/init.d/S99glagol
+cat << EOF_GLAGOL > /etc/init.d/S99glagol
 #!/bin/sh
 DAEMON="/data/opt/bin/glagol_daemon"
 LOG="/data/logs/glagol.log"
+SERVER_URL="$SERVER_URL"
 
-case "$1" in
+case "\$1" in
     start)
-        if [ -x "$DAEMON" ]; then
+        if [ -x "\$DAEMON" ]; then
             killall -9 glagol_daemon 2>/dev/null || true
             mkdir -p /data/logs
-            "$DAEMON" -server "http://195.62.49.84:8088" >> "$LOG" 2>&1 &
+            "\$DAEMON" -server "\$SERVER_URL" >> "\$LOG" 2>&1 &
         fi
         ;;
     stop)
         killall -9 glagol_daemon 2>/dev/null || true
         ;;
     restart)
-        $0 stop
+        \$0 stop
         sleep 1
-        $0 start
+        \$0 start
         ;;
     *)
-        $0 start
+        \$0 start
         ;;
 esac
 EOF_GLAGOL
@@ -317,20 +318,21 @@ fi
 
 # Если загрузка не удалась, создаем встроенную надежную версию tyan
 if [ ! -s "$TYAN_PATH" ]; then
-    cat << 'EOF_TYAN' > "$TYAN_PATH"
+    cat << EOF_TYAN > "$TYAN_PATH"
 #!/bin/sh
 set -e
-export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/data/opt/bin:/opt/bin:$PATH"
+export PATH="/bin:/usr/bin:/sbin:/usr/sbin:/data/opt/bin:/opt/bin:\$PATH"
+SERVER_URL="$SERVER_URL"
 
-case "$1" in
+case "\$1" in
     status)
         echo "=== OnlyTyan Station Status ==="
-        echo "IP: $(ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 || echo 'unknown')"
-        echo "Quasar maind: $(pgrep maind >/dev/null && echo 'RUNNING' || echo 'STOPPED')"
+        echo "IP: \$(ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 || echo 'unknown')"
+        echo "Quasar maind: \$(pgrep maind >/dev/null && echo 'RUNNING' || echo 'STOPPED')"
         CFG="/system/vendor/quasar/quasar.cfg"
-        echo "uniProxyUrl: $(grep -o '"uniProxyUrl": *"[^"]*"' $CFG 2>/dev/null | cut -d'"' -f4 || echo 'not set')"
+        echo "uniProxyUrl: \$(grep -o '\"uniProxyUrl\": *\"[^\"]*\"' \$CFG 2>/dev/null | cut -d'\"' -f4 || echo 'not set')"
         if [ -x /data/opt/soloist/bin/soloist ]; then
-            echo "Soloist: $(pgrep soloist >/dev/null && echo 'RUNNING' || echo 'STOPPED')"
+            echo "Soloist: \$(pgrep soloist >/dev/null && echo 'RUNNING' || echo 'STOPPED')"
         fi
         ;;
     restart)
@@ -340,13 +342,15 @@ case "$1" in
         ;;
     say)
         shift
-        TEXT="$*"
-        if [ -z "$TEXT" ]; then
+        TEXT="\$*"
+        if [ -z "\$TEXT" ]; then
             echo "Использование: tyan say \"Текст\""
             exit 1
         fi
-        echo "Озвучивание: $TEXT"
-        # Воспроизведение через volumeprompt или local tts
+        echo "Озвучивание: \$TEXT"
+        if [ -x /data/opt/bin/glagol_daemon ]; then
+            /data/opt/bin/glagol_daemon -server "\$SERVER_URL" -say "\$TEXT"
+        fi
         ;;
     *)
         echo "Использование: tyan {status|restart|say}"

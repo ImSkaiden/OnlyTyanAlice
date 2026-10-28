@@ -14,15 +14,20 @@ fi
 
 mount -o remount,rw / 2>/dev/null || true
 
-# Остановка поллера
+# Остановка демонов и поллеров
+/etc/init.d/S99glagol stop 2>/dev/null || true
+killall -9 glagol_daemon 2>/dev/null || true
 /etc/init.d/S98station_poller stop 2>/dev/null || true
-rm -f /etc/init.d/S98station_poller /data/opt/bin/station_poller.sh
+rm -f /etc/init.d/S99glagol /etc/init.d/S98station_poller /data/opt/bin/glagol_daemon /data/opt/bin/station_poller.sh /data/opt/bin/tyan /usr/bin/tyan /bin/tyan /data/opt/etc/device_id /data/opt/etc/audio_env.sh
 
 # Восстановление quasar.cfg
 BACKUP_DIR="/data/opt/backup"
-if [ -f "$BACKUP_DIR/quasar.cfg.orig" ]; then
-    cp -af "$BACKUP_DIR/quasar.cfg.orig" /system/vendor/quasar/quasar.cfg
+if [ -f "/system/vendor/quasar/quasar.cfg.orig" ]; then
+    cp -af "/system/vendor/quasar/quasar.cfg.orig" /system/vendor/quasar/quasar.cfg
     echo "✅ Восстановлен оригинальный /system/vendor/quasar/quasar.cfg"
+elif [ -f "$BACKUP_DIR/quasar.cfg.orig" ]; then
+    cp -af "$BACKUP_DIR/quasar.cfg.orig" /system/vendor/quasar/quasar.cfg
+    echo "✅ Восстановлен оригинальный /system/vendor/quasar/quasar.cfg из резервной копии"
 else
     # Если бэкапа нет, возвращаем дефолтный URL
     sed -i 's|"uniProxyUrl": *"[^"]*"|"uniProxyUrl": "wss://uniproxy.alice.yandex.net/uni.ws"|g' /system/vendor/quasar/quasar.cfg
